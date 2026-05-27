@@ -1,0 +1,217 @@
+PROJECT OVERVIEW
+Build a full-stack automated job application system that sends 50–100 job applications per day on behalf of the user. The system targets analyst and data scientist roles across LinkedIn (Easy Apply), Indeed (Quick Apply), and ATS portals (Greenhouse & Lever). It uses an LLM API to generate tailored cover letters and resumes per listing, and includes a full web dashboard to track every application.
+
+TECH STACK
+
+Backend: Python (FastAPI)
+Browser Automation: Playwright (async, headless Chromium)
+Database: SQLite with SQLAlchemy ORM
+Frontend: React + Tailwind CSS (or plain HTML/JS with Tailwind if simpler)
+AI: OpenAI API (gpt-4o-mini for cost efficiency) for cover letter and resume tailoring
+Scheduling: APScheduler (run automation jobs at set times daily)
+PDF Generation: ReportLab or WeasyPrint (for generating tailored resume PDFs)
+Environment Config: python-dotenv
+
+
+CORE FEATURES TO BUILD
+1. Resume Upload & Parsing
+
+Allow user to upload their resume (PDF or DOCX) via the dashboard UI.
+Parse it using pdfplumber (PDF) or python-docx (DOCX) to extract:
+
+Name, email, phone, LinkedIn URL
+Work experience (title, company, dates, bullets)
+Education (degree, institution, year)
+Skills list
+Projects / certifications
+
+
+Store the parsed data as structured JSON in SQLite.
+Display the parsed resume on the dashboard so the user can confirm it's correct.
+
+2. Job Search & Scraping
+Build scrapers for each platform that search for analyst and data scientist roles:
+LinkedIn Easy Apply:
+
+Log into LinkedIn using stored credentials.
+Search with queries like: "data analyst", "data scientist", "business analyst", "analytics engineer".
+Filter for: Easy Apply jobs only, posted within last 24 hours, any location (remote preferred).
+Extract: job title, company, location, job description text, apply URL.
+Skip jobs already applied to (check against DB).
+
+Indeed Quick Apply:
+
+Use Playwright to search Indeed for the same roles.
+Filter for: Easily apply badge.
+Extract: job title, company, location, job description, apply URL.
+Skip already-applied jobs.
+
+Greenhouse & Lever ATS:
+
+Search via https://boards.greenhouse.io/ and https://jobs.lever.co/ public APIs or scrape job listing pages.
+Find analyst/data scientist postings.
+Extract application form fields dynamically using Playwright.
+
+3. AI-Powered Tailoring (per application)
+For each job listing, before applying, call the OpenAI API to generate:
+Tailored Cover Letter:
+
+System prompt: "You are a professional career coach writing cover letters for a data analyst / data scientist candidate."
+User prompt includes: the full job description, the candidate's parsed resume JSON, and instructions to write a 3-paragraph cover letter (opening hook, 2–3 relevant achievements matched to JD, closing CTA). Keep it under 300 words.
+Output: plain text cover letter.
+
+Resume Bullet Tailoring (optional fast path):
+
+Reorder or lightly rephrase the top 3 work experience bullets to match keywords in the job description.
+Use the original resume as the base; only alter bullet wording, not facts.
+Generate a PDF of the tailored resume using ReportLab.
+
+4. Application Submission Engine
+Build a submission engine with these properties:
+
+Queue system: maintain a queue of scraped jobs not yet applied to.
+Rate limiting: apply to no more than 5–8 jobs per minute, with randomized delays (3–12 seconds) between actions to avoid bot detection.
+Daily cap: stop after 100 applications per day.
+Per-platform handlers:
+
+LinkedIn: fill Easy Apply multi-step form using Playwright. Handle single-page and multi-page forms. Auto-fill all fields from resume JSON. Attach tailored cover letter in text field if present.
+Indeed: complete Quick Apply form. Handle resume upload and cover letter text fields.
+Greenhouse/Lever: detect and fill form fields dynamically (name, email, phone, resume upload, cover letter, LinkedIn URL, custom questions). For custom questions (e.g. "Why do you want to work here?"), generate a short AI answer.
+
+
+Error handling: if a form fails or an unexpected element appears, take a screenshot, log the error, mark the job as failed, and move on. Never get stuck on a single application.
+Proxy support (optional): allow the user to configure a rotating proxy list to reduce IP-level blocks.
+
+5. Full Tracking Dashboard
+Build a web dashboard at http://localhost:5000 (or the Replit web URL) with these pages:
+Home / Stats Page:
+
+Total applications sent today / this week / all time.
+Pie chart: breakdown by platform (LinkedIn / Indeed / Greenhouse / Lever).
+Bar chart: applications per day over the past 30 days.
+Status summary: Applied / Failed / Pending / Interview Received.
+
+Applications Table:
+
+Paginated table of all applications.
+Columns: Date, Job Title, Company, Location, Platform, Status, Cover Letter (expand/view), Resume Used, Apply URL (clickable).
+Filters: by platform, status, date range, keyword.
+Ability to manually update status (e.g. mark as "Interview Scheduled", "Offer", "Rejected").
+
+Job Queue:
+
+Show all scraped jobs waiting in the queue.
+Allow user to preview job description and generated cover letter before it's submitted.
+Option to skip / remove individual jobs from the queue.
+
+Settings Page:
+
+Upload / re-upload resume.
+Set job search keywords (default: "data analyst", "data scientist", "business analyst", "analytics engineer").
+Set location preference (default: "Remote" or specific city).
+Set daily application limit (default: 100).
+Enter API keys: OpenAI API key, LinkedIn credentials, Indeed credentials.
+Toggle: enable/disable each platform.
+Toggle: enable resume tailoring per application (slower but higher quality).
+
+Scheduler Control:
+
+Button to start/stop the automation.
+Set daily run time (e.g. "Start at 8:00 AM every day").
+Live log viewer: stream real-time logs of what the bot is currently doing.
+
+6. Scheduling
+
+Use APScheduler to run the full pipeline once per day at a user-configured time.
+Pipeline order: (1) Scrape new jobs → (2) Deduplicate against DB → (3) Generate AI cover letters → (4) Submit applications up to daily cap → (5) Update dashboard.
+Allow manual "Run Now" trigger from the dashboard.
+
+7. Database Schema
+Use SQLAlchemy with SQLite. Tables:
+jobs
+  id, platform, job_title, company, location, remote, job_description,
+  apply_url, scraped_at, status (queued/applied/failed/skipped)
+
+applications
+  id, job_id (FK), applied_at, cover_letter_text, resume_path,
+  status (applied/interview/offer/rejected), notes
+
+resume
+  id, raw_text, parsed_json, uploaded_at
+
+settings
+  key, value
+
+FILE STRUCTURE
+/
+├── main.py                  # FastAPI app entry point
+├── scheduler.py             # APScheduler setup
+├── database.py              # SQLAlchemy models and DB init
+├── requirements.txt
+├── .env.example
+│
+├── scrapers/
+│   ├── linkedin.py          # LinkedIn Easy Apply scraper + submitter
+│   ├── indeed.py            # Indeed Quick Apply scraper + submitter
+│   ├── greenhouse.py        # Greenhouse ATS scraper + submitter
+│   └── lever.py             # Lever ATS scraper + submitter
+│
+├── ai/
+│   ├── cover_letter.py      # OpenAI cover letter generation
+│   ├── resume_tailor.py     # Resume bullet tailoring
+│   └── ats_answers.py       # AI answers for custom ATS questions
+│
+├── engine/
+│   ├── queue_manager.py     # Job queue logic
+│   ├── application_runner.py# Main application submission loop
+│   └── rate_limiter.py      # Delay and cap logic
+│
+├── resume/
+│   ├── parser.py            # PDF/DOCX resume parser
+│   └── pdf_generator.py     # Tailored resume PDF generation
+│
+├── frontend/
+│   ├── index.html           # Dashboard (React or plain HTML)
+│   ├── app.jsx              # React components
+│   └── styles.css           # Tailwind
+│
+└── logs/
+    └── app.log
+
+IMPORTANT IMPLEMENTATION NOTES
+
+Anti-detection: Use Playwright with playwright-stealth plugin. Randomize mouse movements, typing speed, and scroll behavior. Use realistic viewport sizes (1280x800 or 1920x1080). Rotate user-agent strings.
+Login sessions: Save browser cookies/session state to disk after first login so the bot doesn't have to log in on every run. Prompt the user to manually handle MFA/CAPTCHA on first login, then reuse the session.
+CAPTCHA handling: If a CAPTCHA is detected, pause that platform's automation, take a screenshot, notify the user via the dashboard, and move on to the next platform. Do not attempt to bypass CAPTCHAs.
+Resume upload: On platforms that require file upload, use Playwright's set_input_files() method to attach the PDF resume programmatically.
+OpenAI cost management: Cache cover letters by (job_id, resume_version) in the DB so re-runs don't regenerate letters for the same job twice.
+Replit deployment: Make sure the FastAPI server runs on 0.0.0.0 and the port is set from environment variable PORT (Replit sets this automatically). Use playwright install chromium in a setup script.
+First-run wizard: On first launch (no resume in DB, no credentials in settings), redirect the user to a setup wizard: (1) upload resume → (2) enter API keys and credentials → (3) confirm parsed resume → (4) start first run.
+
+
+REQUIREMENTS.TXT (starting point)
+fastapi
+uvicorn
+sqlalchemy
+playwright
+playwright-stealth
+openai
+pdfplumber
+python-docx
+reportlab
+apscheduler
+python-dotenv
+aiohttp
+httpx
+beautifulsoup4
+lxml
+
+DELIVERABLE
+A working Replit project where:
+
+The user uploads their resume and enters their credentials/API keys.
+Clicking "Run Now" automatically searches LinkedIn, Indeed, Greenhouse, and Lever for analyst/data scientist roles.
+The bot generates a tailored cover letter for each job using the OpenAI API.
+The bot submits each application automatically.
+Every application is logged in the dashboard with full details.
+The whole pipeline can be scheduled to run daily at a set time.

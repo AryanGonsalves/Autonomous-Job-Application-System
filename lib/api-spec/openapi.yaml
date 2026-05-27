@@ -1,0 +1,1270 @@
+openapi: 3.1.0
+info:
+  title: Api
+  version: 0.1.0
+  description: Job Application Automation API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: resume
+    description: Resume upload and parsing
+  - name: jobs
+    description: Job listings and queue
+  - name: applications
+    description: Application tracking
+  - name: settings
+    description: User settings
+  - name: scheduler
+    description: Automation scheduler
+  - name: stats
+    description: Dashboard statistics
+  - name: ai
+    description: AI generation endpoints
+  - name: proxies
+    description: Rotating proxy management
+
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  # Resume
+  /resume:
+    get:
+      operationId: getResume
+      tags: [resume]
+      summary: Get current resume
+      responses:
+        "200":
+          description: Resume data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Resume"
+        "404":
+          description: No resume uploaded
+
+  # Jobs
+  /jobs:
+    get:
+      operationId: listJobs
+      tags: [jobs]
+      summary: List all scraped jobs
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [queued, applied, failed, skipped, filtered_non_us]
+        - name: platform
+          in: query
+          schema:
+            type: string
+            enum: [linkedin, indeed, greenhouse, lever, handshake]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Job list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobListResponse"
+
+  /jobs/{id}:
+    get:
+      operationId: getJob
+      tags: [jobs]
+      summary: Get job by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Job detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "404":
+          description: Not found
+    patch:
+      operationId: updateJobStatus
+      tags: [jobs]
+      summary: Update job status
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JobStatusUpdate"
+      responses:
+        "200":
+          description: Updated job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+    delete:
+      operationId: deleteJob
+      tags: [jobs]
+      summary: Remove job from queue
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  /jobs/{id}/preview:
+    get:
+      operationId: getJobPreview
+      tags: [jobs]
+      summary: Get job with generated cover letter preview
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Job with cover letter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobPreview"
+
+  # Applications
+  /applications:
+    get:
+      operationId: listApplications
+      tags: [applications]
+      summary: List all applications
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [applied, interview, offer, rejected]
+        - name: platform
+          in: query
+          schema:
+            type: string
+            enum: [linkedin, indeed, greenhouse, lever]
+        - name: keyword
+          in: query
+          schema:
+            type: string
+        - name: dateFrom
+          in: query
+          schema:
+            type: string
+        - name: dateTo
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Application list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApplicationListResponse"
+
+  /applications/{id}:
+    get:
+      operationId: getApplication
+      tags: [applications]
+      summary: Get application by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Application detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Application"
+    patch:
+      operationId: updateApplicationStatus
+      tags: [applications]
+      summary: Update application status or notes
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApplicationUpdate"
+      responses:
+        "200":
+          description: Updated application
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Application"
+
+  # Settings
+  /settings:
+    get:
+      operationId: getSettings
+      tags: [settings]
+      summary: Get all settings
+      responses:
+        "200":
+          description: Settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+    put:
+      operationId: updateSettings
+      tags: [settings]
+      summary: Update settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SettingsInput"
+      responses:
+        "200":
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+
+  # Scheduler
+  /scheduler/status:
+    get:
+      operationId: getSchedulerStatus
+      tags: [scheduler]
+      summary: Get scheduler status
+      responses:
+        "200":
+          description: Scheduler status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchedulerStatus"
+
+  /scheduler/start:
+    post:
+      operationId: startScheduler
+      tags: [scheduler]
+      summary: Start the automation scheduler
+      responses:
+        "200":
+          description: Started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchedulerStatus"
+
+  /scheduler/stop:
+    post:
+      operationId: stopScheduler
+      tags: [scheduler]
+      summary: Stop the automation scheduler
+      responses:
+        "200":
+          description: Stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchedulerStatus"
+
+  /scheduler/run-now:
+    post:
+      operationId: runNow
+      tags: [scheduler]
+      summary: Trigger an immediate automation run
+      responses:
+        "200":
+          description: Run triggered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunResult"
+
+  /scheduler/history:
+    get:
+      operationId: getRunHistory
+      tags: [scheduler]
+      summary: Get run history (last 30 runs)
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 30
+      responses:
+        "200":
+          description: Run history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RunHistoryItem"
+
+  /scheduler/slots:
+    put:
+      operationId: updateSchedulerSlots
+      tags: [scheduler]
+      summary: Update daily run time slots
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SchedulerSlotsInput"
+      responses:
+        "200":
+          description: Slots updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required: [ok]
+
+  /scheduler/stop-run:
+    post:
+      operationId: stopCurrentRun
+      tags: [scheduler]
+      summary: Request graceful stop of current pipeline run
+      responses:
+        "200":
+          description: Stop requested
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required: [ok]
+
+  /scheduler/logs:
+    get:
+      operationId: getSchedulerLogs
+      tags: [scheduler]
+      summary: Get recent automation log lines
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+      responses:
+        "200":
+          description: Log lines
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogsResponse"
+
+  # Stats
+  /stats/summary:
+    get:
+      operationId: getStatsSummary
+      tags: [stats]
+      summary: Get dashboard summary stats
+      responses:
+        "200":
+          description: Summary stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsSummary"
+
+  /stats/daily:
+    get:
+      operationId: getDailyStats
+      tags: [stats]
+      summary: Applications per day for last 30 days
+      responses:
+        "200":
+          description: Daily stats
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DailyStat"
+
+  /stats/platform-breakdown:
+    get:
+      operationId: getPlatformBreakdown
+      tags: [stats]
+      summary: Application counts by platform
+      responses:
+        "200":
+          description: Platform breakdown
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PlatformStat"
+
+  /stats/status-breakdown:
+    get:
+      operationId: getStatusBreakdown
+      tags: [stats]
+      summary: Application counts by status
+      responses:
+        "200":
+          description: Status breakdown
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StatusStat"
+
+  /stats/recent-activity:
+    get:
+      operationId: getRecentActivity
+      tags: [stats]
+      summary: Recent application activity feed
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: Recent activity
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ActivityItem"
+
+  # Greenhouse Companies
+  /greenhouse/companies:
+    get:
+      operationId: getGreenhouseCompanies
+      tags: [scheduler]
+      summary: Get the Greenhouse company seed list
+      responses:
+        "200":
+          description: Company list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GreenhouseCompanyListResponse"
+    put:
+      operationId: updateGreenhouseCompanies
+      tags: [scheduler]
+      summary: Replace the full Greenhouse company list
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GreenhouseCompanyListResponse"
+      responses:
+        "200":
+          description: Updated company list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GreenhouseCompanyListResponse"
+    post:
+      operationId: addGreenhouseCompany
+      tags: [scheduler]
+      summary: Add a company to the Greenhouse seed list
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GreenhouseCompany"
+      responses:
+        "201":
+          description: Company added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GreenhouseCompany"
+
+  /greenhouse/companies/{slug}:
+    delete:
+      operationId: removeGreenhouseCompany
+      tags: [scheduler]
+      summary: Remove a company from the Greenhouse seed list
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required: [ok]
+
+  # Proxies
+  /proxies:
+    get:
+      operationId: listProxies
+      tags: [proxies]
+      summary: List all configured proxies
+      responses:
+        "200":
+          description: Proxy list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Proxy"
+    post:
+      operationId: createProxy
+      tags: [proxies]
+      summary: Add a new proxy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProxyInput"
+      responses:
+        "201":
+          description: Created proxy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Proxy"
+
+  /proxies/{id}:
+    patch:
+      operationId: updateProxy
+      tags: [proxies]
+      summary: Update a proxy entry
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProxyInput"
+      responses:
+        "200":
+          description: Updated proxy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Proxy"
+        "404":
+          description: Not found
+    delete:
+      operationId: deleteProxy
+      tags: [proxies]
+      summary: Remove a proxy
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  /proxies/{id}/test:
+    post:
+      operationId: testProxy
+      tags: [proxies]
+      summary: Test a proxy connection
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Test result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProxyTestResult"
+
+  /proxies/rotation:
+    get:
+      operationId: getProxyRotationSettings
+      tags: [proxies]
+      summary: Get proxy rotation settings
+      responses:
+        "200":
+          description: Rotation settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProxyRotationSettings"
+    put:
+      operationId: updateProxyRotationSettings
+      tags: [proxies]
+      summary: Update proxy rotation settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProxyRotationSettingsInput"
+      responses:
+        "200":
+          description: Updated rotation settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProxyRotationSettings"
+
+  # AI
+  /ai/generate-cover-letter:
+    post:
+      operationId: generateCoverLetter
+      tags: [ai]
+      summary: Generate a cover letter for a job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CoverLetterRequest"
+      responses:
+        "200":
+          description: Generated cover letter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CoverLetterResponse"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required: [status]
+
+    Resume:
+      type: object
+      properties:
+        id:
+          type: integer
+        rawText:
+          type: string
+        parsedJson:
+          $ref: "#/components/schemas/ParsedResume"
+        uploadedAt:
+          type: string
+      required: [id, rawText, parsedJson, uploadedAt]
+
+    ParsedResume:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+        phone:
+          type: ["string", "null"]
+        linkedinUrl:
+          type: ["string", "null"]
+        summary:
+          type: ["string", "null"]
+        experience:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkExperience"
+        education:
+          type: array
+          items:
+            $ref: "#/components/schemas/Education"
+        skills:
+          type: array
+          items:
+            type: string
+        projects:
+          type: array
+          items:
+            type: string
+      required: [name, email, experience, education, skills, projects]
+
+    WorkExperience:
+      type: object
+      properties:
+        title:
+          type: string
+        company:
+          type: string
+        dates:
+          type: string
+        bullets:
+          type: array
+          items:
+            type: string
+      required: [title, company, dates, bullets]
+
+    Education:
+      type: object
+      properties:
+        degree:
+          type: string
+        institution:
+          type: string
+        year:
+          type: ["string", "null"]
+      required: [degree, institution]
+
+    Job:
+      type: object
+      properties:
+        id:
+          type: integer
+        platform:
+          type: string
+          enum: [linkedin, indeed, greenhouse, lever, handshake]
+        jobTitle:
+          type: string
+        company:
+          type: string
+        location:
+          type: ["string", "null"]
+        remote:
+          type: boolean
+        jobDescription:
+          type: ["string", "null"]
+        applyUrl:
+          type: string
+        scrapedAt:
+          type: string
+        status:
+          type: string
+          enum: [queued, applied, failed, skipped, filtered_non_us]
+        coverLetterText:
+          type: ["string", "null"]
+        countryResolved:
+          type: ["string", "null"]
+      required: [id, platform, jobTitle, company, remote, applyUrl, scrapedAt, status]
+
+    JobPreview:
+      type: object
+      properties:
+        job:
+          $ref: "#/components/schemas/Job"
+        coverLetter:
+          type: ["string", "null"]
+      required: [job]
+
+    JobListResponse:
+      type: object
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/Job"
+        total:
+          type: integer
+      required: [jobs, total]
+
+    JobStatusUpdate:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [queued, applied, failed, skipped, filtered_non_us]
+      required: [status]
+
+    Application:
+      type: object
+      properties:
+        id:
+          type: integer
+        jobId:
+          type: integer
+        appliedAt:
+          type: string
+        coverLetterText:
+          type: ["string", "null"]
+        resumePath:
+          type: ["string", "null"]
+        status:
+          type: string
+          enum: [applied, interview, offer, rejected]
+        notes:
+          type: ["string", "null"]
+        job:
+          $ref: "#/components/schemas/Job"
+      required: [id, jobId, appliedAt, status, job]
+
+    ApplicationListResponse:
+      type: object
+      properties:
+        applications:
+          type: array
+          items:
+            $ref: "#/components/schemas/Application"
+        total:
+          type: integer
+      required: [applications, total]
+
+    ApplicationUpdate:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [applied, interview, offer, rejected]
+        notes:
+          type: string
+
+    Settings:
+      type: object
+      properties:
+        keywords:
+          type: array
+          items:
+            type: string
+        locationPreference:
+          type: string
+        dailyLimit:
+          type: integer
+        openaiApiKey:
+          type: ["string", "null"]
+        linkedinEmail:
+          type: ["string", "null"]
+        linkedinPassword:
+          type: ["string", "null"]
+        indeedEmail:
+          type: ["string", "null"]
+        indeedPassword:
+          type: ["string", "null"]
+        handshakeAsuEmail:
+          type: ["string", "null"]
+        handshakeAsuPassword:
+          type: ["string", "null"]
+        enableLinkedin:
+          type: boolean
+        enableIndeed:
+          type: boolean
+        enableGreenhouse:
+          type: boolean
+        enableLever:
+          type: boolean
+        enableHandshake:
+          type: boolean
+        enableResumeTailoring:
+          type: boolean
+        scheduledTime:
+          type: string
+        schedulerSlot1:
+          type: ["string", "null"]
+        schedulerSlot2:
+          type: ["string", "null"]
+        schedulerSlot3:
+          type: ["string", "null"]
+      required: [keywords, locationPreference, dailyLimit, enableLinkedin, enableIndeed, enableGreenhouse, enableLever, enableHandshake, enableResumeTailoring, scheduledTime]
+
+    SettingsInput:
+      type: object
+      properties:
+        keywords:
+          type: array
+          items:
+            type: string
+        locationPreference:
+          type: string
+        dailyLimit:
+          type: integer
+        openaiApiKey:
+          type: string
+        linkedinEmail:
+          type: string
+        linkedinPassword:
+          type: string
+        indeedEmail:
+          type: string
+        indeedPassword:
+          type: string
+        handshakeAsuEmail:
+          type: string
+        handshakeAsuPassword:
+          type: string
+        enableLinkedin:
+          type: boolean
+        enableIndeed:
+          type: boolean
+        enableGreenhouse:
+          type: boolean
+        enableLever:
+          type: boolean
+        enableHandshake:
+          type: boolean
+        enableResumeTailoring:
+          type: boolean
+        scheduledTime:
+          type: string
+        schedulerSlot1:
+          type: string
+        schedulerSlot2:
+          type: string
+        schedulerSlot3:
+          type: string
+
+    SchedulerStatus:
+      type: object
+      properties:
+        running:
+          type: boolean
+        scheduledTime:
+          type: ["string", "null"]
+        lastRun:
+          type: ["string", "null"]
+        nextRun:
+          type: ["string", "null"]
+        nextRunIn:
+          type: ["integer", "null"]
+        currentPhase:
+          type: ["string", "null"]
+        applicationsToday:
+          type: integer
+        slots:
+          type: array
+          items:
+            type: string
+        currentRunStartedAt:
+          type: ["string", "null"]
+      required: [running, applicationsToday, slots]
+
+    RunHistoryItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        startedAt:
+          type: string
+        finishedAt:
+          type: ["string", "null"]
+        jobsScraped:
+          type: integer
+        jobsApplied:
+          type: integer
+        jobsFailed:
+          type: integer
+        jobsFilteredNonUs:
+          type: integer
+        triggeredBy:
+          type: string
+          enum: [scheduled, manual]
+        durationMs:
+          type: ["integer", "null"]
+      required: [id, startedAt, jobsScraped, jobsApplied, jobsFailed, jobsFilteredNonUs, triggeredBy]
+
+    SchedulerSlotsInput:
+      type: object
+      properties:
+        slots:
+          type: array
+          items:
+            type: string
+          maxItems: 3
+      required: [slots]
+
+    GreenhouseCompany:
+      type: object
+      properties:
+        slug:
+          type: string
+        name:
+          type: string
+      required: [slug, name]
+
+    GreenhouseCompanyListResponse:
+      type: object
+      properties:
+        companies:
+          type: array
+          items:
+            $ref: "#/components/schemas/GreenhouseCompany"
+      required: [companies]
+
+    RunResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        jobId:
+          type: ["string", "null"]
+      required: [success, message]
+
+    LogsResponse:
+      type: object
+      properties:
+        logs:
+          type: array
+          items:
+            $ref: "#/components/schemas/LogLine"
+      required: [logs]
+
+    LogLine:
+      type: object
+      properties:
+        timestamp:
+          type: string
+        level:
+          type: string
+          enum: [info, warn, error, debug]
+        message:
+          type: string
+        platform:
+          type: ["string", "null"]
+      required: [timestamp, level, message]
+
+    StatsSummary:
+      type: object
+      properties:
+        totalAllTime:
+          type: integer
+        totalToday:
+          type: integer
+        totalThisWeek:
+          type: integer
+        totalQueued:
+          type: integer
+        totalFailed:
+          type: integer
+        totalInterviews:
+          type: integer
+        totalOffers:
+          type: integer
+        totalFilteredNonUs:
+          type: integer
+        successRate:
+          type: number
+      required: [totalAllTime, totalToday, totalThisWeek, totalQueued, totalFailed, totalInterviews, totalOffers, totalFilteredNonUs, successRate]
+
+    DailyStat:
+      type: object
+      properties:
+        date:
+          type: string
+        count:
+          type: integer
+      required: [date, count]
+
+    PlatformStat:
+      type: object
+      properties:
+        platform:
+          type: string
+        count:
+          type: integer
+      required: [platform, count]
+
+    StatusStat:
+      type: object
+      properties:
+        status:
+          type: string
+        count:
+          type: integer
+      required: [status, count]
+
+    ActivityItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        type:
+          type: string
+          enum: [applied, status_change, failed, scraped]
+        jobTitle:
+          type: string
+        company:
+          type: string
+        platform:
+          type: string
+        timestamp:
+          type: string
+        details:
+          type: ["string", "null"]
+      required: [id, type, jobTitle, company, platform, timestamp]
+
+    Proxy:
+      type: object
+      properties:
+        id:
+          type: integer
+        label:
+          type: ["string", "null"]
+        host:
+          type: string
+        port:
+          type: string
+        username:
+          type: ["string", "null"]
+        password:
+          type: ["string", "null"]
+        protocol:
+          type: string
+          enum: [http, https, socks5]
+        enabled:
+          type: boolean
+        lastTestedAt:
+          type: ["string", "null"]
+        lastTestStatus:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+      required: [id, host, port, protocol, enabled, createdAt]
+
+    ProxyInput:
+      type: object
+      properties:
+        label:
+          type: string
+        host:
+          type: string
+        port:
+          type: string
+        username:
+          type: string
+        password:
+          type: string
+        protocol:
+          type: string
+          enum: [http, https, socks5]
+        enabled:
+          type: boolean
+      required: [host, port]
+
+    ProxyTestResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        latencyMs:
+          type: ["integer", "null"]
+        ip:
+          type: ["string", "null"]
+      required: [success, message]
+
+    ProxyRotationSettings:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        strategy:
+          type: string
+          enum: [round-robin, random, least-used]
+        rotateEvery:
+          type: integer
+        activeProxyId:
+          type: ["integer", "null"]
+      required: [enabled, strategy, rotateEvery]
+
+    ProxyRotationSettingsInput:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        strategy:
+          type: string
+          enum: [round-robin, random, least-used]
+        rotateEvery:
+          type: integer
+
+    CoverLetterRequest:
+      type: object
+      properties:
+        jobId:
+          type: integer
+      required: [jobId]
+
+    CoverLetterResponse:
+      type: object
+      properties:
+        coverLetter:
+          type: string
+        cached:
+          type: boolean
+      required: [coverLetter, cached]
