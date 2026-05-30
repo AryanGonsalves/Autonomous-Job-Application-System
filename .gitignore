@@ -90,6 +90,9 @@ fix-*.mjs
 fix-*.py
 
 # Replit platform files (safe to delete locally too)
+replit.md
 .replit
 .replitignore
 **/.replit-artifact/
+attached_assets/
+artifacts/mockup-sandbox/
