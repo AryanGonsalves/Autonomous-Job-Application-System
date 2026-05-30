@@ -363,6 +363,8 @@ export async function runPipeline(triggeredBy: "scheduled" | "manual" = "manual"
                 errMsg.includes("Indeed: Apply button not found") || // May be session expiry, not external apply
                 errMsg.includes("did not reach submit after 35 steps") || // Long form hit step limit
                 errMsg.includes("stuck in Easy Apply modal") ||       // No Next/Submit — transient render issue
+                errMsg.includes("Greenhouse: submit button not found") || // iframe may not have loaded in time
+                errMsg.includes("Greenhouse: job page not found") ||   // listing removed — skip and retry later
                 errMsg.includes("authwall") ||
                 errMsg.includes("ERR_ABORTED") ||
                 errMsg.includes("Target closed") ||
