@@ -997,14 +997,24 @@ async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
     try {
       const u = new URL(job.applyUrl);
       const pathNoSlash = u.pathname.replace(/\/$/, "");
-      if (pathNoSlash.endsWith("/apply")) {
+      if (u.hostname === "job-boards.greenhouse.io") {
+        // Newer Greenhouse UI (job-boards.greenhouse.io): the LISTING page itself
+        // renders the full inline application form ("Apply for this job" with name,
+        // email, resume upload, screening questions, and a "Submit application"
+        // button). The on-page "Apply" link is just an anchor that scrolls to that
+        // same form. Appending /apply here returns a blank 404 page — confirmed for
+        // Anthropic and ClickHouse. Always strip any /apply suffix and use the
+        // listing URL as-is.
+        u.pathname = pathNoSlash.replace(/\/apply$/, "");
+        applyUrl = u.toString();
+      } else if (pathNoSlash.endsWith("/apply")) {
         applyUrl = job.applyUrl; // already correct
       } else if (u.hostname === "boards.greenhouse.io") {
-        // Standard Greenhouse board (boards.greenhouse.io) — insert /apply before query string
+        // Classic Greenhouse board (boards.greenhouse.io) — insert /apply before query string
         u.pathname = pathNoSlash + "/apply";
         applyUrl = u.toString();
       } else if (u.hostname.includes("greenhouse.io")) {
-        // job-boards.greenhouse.io and other Greenhouse variants use listing URL as-is;
+        // Other Greenhouse variants use listing URL as-is;
         // appending /apply causes a 404 on these subdomains.
         applyUrl = job.applyUrl;
       } else {
@@ -1064,7 +1074,12 @@ async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
     if (formScope === page) {
       const hasFormFields = await page
         .locator(
-          'input[type="file"], #first_name, input[name="first_name"], input[name="email"], #email, form input[type="text"]'
+          // Classic UI uses #first_name / name="first_name"; the newer
+          // job-boards.greenhouse.io UI uses auto-generated ids/names, so also
+          // match by type, autocomplete, and aria-label to avoid a false bail-out.
+          'input[type="file"], #first_name, input[name="first_name"], input[name="email"], #email, ' +
+          'input[type="email"], input[autocomplete="given-name"], input[autocomplete="family-name"], ' +
+          'input[aria-label*="first name" i], input[aria-label*="email" i], form input[type="text"]'
         )
         .count()
         .catch(() => 0);
