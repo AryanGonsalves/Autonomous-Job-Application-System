@@ -999,10 +999,14 @@ async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
       const pathNoSlash = u.pathname.replace(/\/$/, "");
       if (pathNoSlash.endsWith("/apply")) {
         applyUrl = job.applyUrl; // already correct
-      } else if (u.hostname.includes("greenhouse.io")) {
-        // Standard Greenhouse board — insert /apply before query string
+      } else if (u.hostname === "boards.greenhouse.io") {
+        // Standard Greenhouse board (boards.greenhouse.io) — insert /apply before query string
         u.pathname = pathNoSlash + "/apply";
         applyUrl = u.toString();
+      } else if (u.hostname.includes("greenhouse.io")) {
+        // job-boards.greenhouse.io and other Greenhouse variants use listing URL as-is;
+        // appending /apply causes a 404 on these subdomains.
+        applyUrl = job.applyUrl;
       } else {
         // Custom careers page (e.g. careers.roblox.com, pubmatic.com)
         // Greenhouse form loads inside an iframe — navigate to listing page as-is
@@ -1048,6 +1052,26 @@ async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
         formScope = f;
         // Give the embedded form time to render its fields
         await f.waitForSelector('input, textarea, button', { timeout: 8000 }).catch(() => {});
+      }
+    }
+
+    // Some companies use a fully custom career site (e.g. stripe.com/jobs/listing/...)
+    // that does NOT inline the Greenhouse form — clicking "Apply" navigates to a
+    // separate apply page or an external ATS. When neither an embedded Greenhouse
+    // iframe nor any application input fields are present, bail out with a clear,
+    // actionable error instead of failing later with the opaque
+    // "submit button not found". The scheduler treats this message as retryable.
+    if (formScope === page) {
+      const hasFormFields = await page
+        .locator(
+          'input[type="file"], #first_name, input[name="first_name"], input[name="email"], #email, form input[type="text"]'
+        )
+        .count()
+        .catch(() => 0);
+      if (!hasFormFields) {
+        throw new Error(
+          `Greenhouse: no application form found — likely a custom career page that redirects to an external apply flow (${page.url()})`
+        );
       }
     }
 
@@ -1125,35 +1149,74 @@ async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
       else if (tiCount > 0) await q.locator('input[type="text"]').first().fill(finalAnswer).catch(() => {});
     }
 
-    // Submit — try multiple selectors to handle standard + custom Greenhouse embeds
-    // Some companies (Roblox, PubMatic, Braze) use custom styling without type="submit"
+    // Submit — try multiple selectors to handle standard + custom Greenhouse embeds.
+    // Modern Greenhouse boards (boards.greenhouse.io, job-boards.greenhouse.io) are
+    // React SPAs that lazy-render the submit button below the fold AFTER the form
+    // mounts — so it is frequently absent/detached at the moment we check, which was
+    // the real cause of "submit button not found" on Figma/Faire/Chime/Stripe.
+    // Fixes: (1) scroll to the bottom so the button renders + leaves any sticky
+    // footer overlap, (2) wait (polling) for one of the selectors to actually
+    // appear, (3) scroll the matched button into view and click with a generous
+    // timeout, falling back to a forced click if something overlaps it.
     const submitSelectors = [
       'input[type="submit"]',
       'button[type="submit"]',
       'button[id*="submit"]',
       'button[class*="submit"]',
       'button:has-text("Submit Application")',
+      'button:has-text("Submit your application")',
+      'button:has-text("Submit my application")',
       'button:has-text("Submit")',
       'button:has-text("Apply")',
       'a[class*="submit"]',
+      // Modern Greenhouse React board renders an aria-labelled submit button
+      'button[aria-label*="Submit" i]',
+      'div[role="button"]:has-text("Submit")',
     ];
 
-    let submitLocator = formScope.locator(submitSelectors[0]).first();
+    // Nudge the React form to render its (lazy, below-the-fold) submit button.
+    await page
+      .evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+      .catch(() => {});
+    await page.waitForTimeout(600);
 
+    // Poll for the submit button to appear (handles async SPA render). The form
+    // can take a few seconds to mount the action row after networkidle fires.
+    let submitLocator = formScope.locator(submitSelectors[0]).first();
     let submitCount = 0;
-    for (const sel of submitSelectors) {
-      const loc = formScope.locator(sel).first();
-      submitCount = await loc.count().catch(() => 0);
-      if (submitCount > 0) {
-        submitLocator = loc;
-        break;
+    const submitDeadline = Date.now() + 15000;
+    while (Date.now() < submitDeadline) {
+      for (const sel of submitSelectors) {
+        const loc = formScope.locator(sel).first();
+        const c = await loc.count().catch(() => 0);
+        if (c > 0) {
+          submitLocator = loc;
+          submitCount = c;
+          break;
+        }
       }
+      if (submitCount > 0) break;
+      // Keep scrolling to bottom in case the form is still growing in height.
+      await page
+        .evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+        .catch(() => {});
+      await page.waitForTimeout(1000);
     }
 
     if (submitCount === 0) {
       throw new Error(`Greenhouse: submit button not found on ${page.url()}`);
     }
-    await submitLocator.click();
+
+    // Scroll the matched button into view; sticky headers/footers on the React
+    // board can otherwise intercept the click and Playwright will time out.
+    await submitLocator.scrollIntoViewIfNeeded({ timeout: 5000 }).catch(() => {});
+    try {
+      await submitLocator.click({ timeout: 10000 });
+    } catch {
+      // Force-click as a fallback when an overlay (cookie banner, sticky bar)
+      // covers the button so the actionability check never passes.
+      await submitLocator.click({ force: true, timeout: 10000 });
+    }
 
     // Wait for confirmation
     try {
