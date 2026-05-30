@@ -367,6 +367,7 @@ export async function runPipeline(triggeredBy: "scheduled" | "manual" = "manual"
                 errMsg.includes("Greenhouse: job page not found") ||   // listing removed — skip and retry later
                 errMsg.includes("form still present after submit") ||  // validation transient — retry next run
                 errMsg.includes("no application form found") ||        // custom career page redirect
+                errMsg.includes("form validation error at step 0") ||  // required fields missing — retry
                 errMsg.includes("authwall") ||
                 errMsg.includes("ERR_ABORTED") ||
                 errMsg.includes("Target closed") ||

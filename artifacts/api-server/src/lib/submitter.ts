@@ -1199,7 +1199,17 @@ async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
     // can take a few seconds to mount the action row after networkidle fires.
     let submitLocator = formScope.locator(submitSelectors[0]).first();
     let submitCount = 0;
-    const submitDeadline = Date.now() + 15000;
+    // Conditional polling timeout. Only the classic React SPA board
+    // (boards.greenhouse.io) lazy-renders the submit button below the fold, so it
+    // needs the full 15s poll. The newer job-boards.greenhouse.io UI renders the
+    // form (and submit button) inline on the listing page, and custom career pages
+    // have no Greenhouse form at all — for both, poll only 3s so failures fail fast
+    // instead of burning 15s each (100+ queued jobs × 15s was stalling the pipeline).
+    let submitPollMs = 3000;
+    try {
+      if (new URL(applyUrl).hostname === "boards.greenhouse.io") submitPollMs = 15000;
+    } catch { /* keep fast 3s default on URL parse failure */ }
+    const submitDeadline = Date.now() + submitPollMs;
     while (Date.now() < submitDeadline) {
       for (const sel of submitSelectors) {
         const loc = formScope.locator(sel).first();
