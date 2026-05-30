@@ -134,12 +134,19 @@ curl -X POST http://localhost:3000/api/scheduler/run-now
 
 ---
 
+## Status
+
+**216+ applications submitted** across LinkedIn (150+), Lever (39), and Greenhouse. 40+ email confirmations matched via IMAP. Pipeline running daily at 01:00, 08:00, and 17:30.
+
+---
+
 ## Known Limitations
 
 - **LinkedIn session expiry** — if LinkedIn stops working, delete `sessions/linkedin_session.json` and restart; the bot will re-authenticate
 - **Embedded ATS forms** (Workable, Ceipal inside LinkedIn Easy Apply) — these use React-managed shadow DOM and are skipped automatically; they can't be filled reliably
-- **Indeed** — scraping works but auto-submission is disabled; Indeed's Quick Apply requires additional implementation
+- **Indeed** — scraping works but auto-submission is disabled; Indeed's Quick Apply requires additional session handling
 - **Handshake** — works but requires valid ASU credentials and active session
+- **Greenhouse (job-boards subdomain)** — newer Greenhouse UI (`job-boards.greenhouse.io`) has inline forms; submission works but some custom career pages (Klaviyo, Stripe, Airbnb) redirect to external apply flows and are skipped as retryable
 
 ---
 
