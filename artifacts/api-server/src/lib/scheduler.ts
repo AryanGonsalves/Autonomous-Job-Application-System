@@ -365,6 +365,8 @@ export async function runPipeline(triggeredBy: "scheduled" | "manual" = "manual"
                 errMsg.includes("stuck in Easy Apply modal") ||       // No Next/Submit — transient render issue
                 errMsg.includes("Greenhouse: submit button not found") || // iframe may not have loaded in time
                 errMsg.includes("Greenhouse: job page not found") ||   // listing removed — skip and retry later
+                errMsg.includes("form still present after submit") ||  // validation transient — retry next run
+                errMsg.includes("no application form found") ||        // custom career page redirect
                 errMsg.includes("authwall") ||
                 errMsg.includes("ERR_ABORTED") ||
                 errMsg.includes("Target closed") ||
