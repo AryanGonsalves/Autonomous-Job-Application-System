@@ -61,10 +61,13 @@ export async function parseResume(filePath: string, mimeType: string): Promise<{
   let rawText = "";
 
   if (mimeType === "application/pdf" || filePath.endsWith(".pdf")) {
-    const pdfParse = (await import("pdf-parse")).default;
+    // pdf-parse v2+ uses a class-based API: new PDFParse({ data }) → .load() → .getText()
+    const { PDFParse } = await import("pdf-parse");
     const buffer = fs.readFileSync(filePath);
-    const data = await pdfParse(buffer);
-    rawText = data.text;
+    const parser = new PDFParse({ data: buffer });
+    await parser.load();
+    const result = await parser.getText();
+    rawText = result.text;
   } else if (
     mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
     filePath.endsWith(".docx")
@@ -130,6 +133,16 @@ function extractStructuredData(text: string): ParsedResume {
   if (projSection) {
     const projLines = projSection.split("\n").filter((l) => l.trim().length > 10).slice(0, 5);
     projects.push(...projLines.map((l) => l.trim()));
+
+    // Also parse project entries as experience blocks so the AI has richer context
+    // (ATS answers, cover letters, and skills inference all benefit from project roles)
+    const projBlocks = parseExperienceBlocks(projSection);
+    for (const block of projBlocks) {
+      if (!block.company || block.company === "Company") {
+        block.company = "Personal Project";
+      }
+      experience.push(block);
+    }
   }
 
   // Summary
@@ -158,11 +171,22 @@ function parseExperienceBlocks(section: string): WorkExperience[] {
 
   let current: WorkExperience | null = null;
   for (const line of lines) {
-    // Date pattern signals a new experience block
+    // Matches "Title — Company ... Mon YYYY – Mon YYYY" or "Title ... YYYY"
+    // Allow long lines (resume format often puts title + company + date on one line)
     const datePattern = /(\d{4}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
-    const titlePattern = /^(senior|junior|lead|principal|staff|head|director|manager|analyst|scientist|engineer|consultant|associate)/i;
+    // Inline-date format: "Role — Company Location Mon YYYY – Mon YYYY"
+    const inlineDatePattern = /—.+?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|\d{4})/i;
+    const titlePattern = /^(senior|junior|lead|principal|staff|head|director|manager|analyst|scientist|engineer|consultant|associate|data|software|product|business|research|machine|ai|ml)/i;
 
-    if (datePattern.test(line) && line.length < 80) {
+    if (inlineDatePattern.test(line)) {
+      // Extract title (everything before the em-dash)
+      const dashIdx = line.indexOf("—");
+      const title = dashIdx > 0 ? line.slice(0, dashIdx).trim() : line;
+      // Extract dates (last date-like segment)
+      const dateMatch = line.match(/(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4}.*$/i);
+      if (current) blocks.push(current);
+      current = { title, company: "Company", dates: dateMatch?.[0] ?? "", bullets: [] };
+    } else if (datePattern.test(line) && line.length < 80) {
       if (current) blocks.push(current);
       current = {
         title: lines[lines.indexOf(line) - 1] ?? "Role",
@@ -170,9 +194,9 @@ function parseExperienceBlocks(section: string): WorkExperience[] {
         dates: line,
         bullets: [],
       };
-    } else if (current && line.startsWith("•") || line.startsWith("-") || line.startsWith("*")) {
-      current?.bullets.push(line.replace(/^[•\-*]\s*/, ""));
-    } else if (titlePattern.test(line) && line.length < 100) {
+    } else if (line.startsWith("•") || line.startsWith("-") || line.startsWith("*")) {
+      if (current) current.bullets.push(line.replace(/^[•\-*]\s*/, ""));
+    } else if (titlePattern.test(line) && line.length < 120 && !line.includes("•")) {
       if (current) blocks.push(current);
       current = { title: line, company: "Company", dates: "", bullets: [] };
     }

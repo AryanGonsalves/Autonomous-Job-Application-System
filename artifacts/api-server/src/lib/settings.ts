@@ -19,6 +19,10 @@ const DEFAULTS: Record<string, string> = {
   imapGmailAppPassword: "",
   imapYahooEmail: "",
   imapYahooAppPassword: "",
+  // When "true", confirmation emails in the Sent folder are imported as manual
+  // application records. Off by default to avoid mixing manual applies with the
+  // bot's own applications.
+  importManualFromSent: "false",
   enableLinkedin: "true",
   enableIndeed: "true",
   enableGreenhouse: "true",

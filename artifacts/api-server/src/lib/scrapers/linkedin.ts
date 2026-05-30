@@ -65,9 +65,16 @@ async function scrapeJobsForKeyword(
     (cards: any[]) => cards.map((card: any) => {
       const link = card.querySelector('a[href*="/jobs/view/"]');
       const url = link?.href?.split('?')[0] ?? '';
-      const title = card.querySelector(
+      // LinkedIn repeats title for screen readers — first non-empty line is the clean title
+      const rawTitle = card.querySelector(
         '.job-card-list__title, .job-card-container__link, a[data-control-name="job_card_title"]'
-      )?.textContent?.trim() ?? '';
+      )?.textContent ?? '';
+      let title = rawTitle.split(/\r?\n/).map((s: string) => s.trim()).find((s: string) => s.length > 0) ?? '';
+      // Dedup: LinkedIn sometimes concatenates two copies of the title without separator
+      if (title.length % 2 === 0) {
+        const half = title.slice(0, title.length / 2);
+        if (half === title.slice(title.length / 2)) title = half;
+      }
       const company = card.querySelector(
         '.job-card-container__primary-description, .artdeco-entity-lockup__subtitle span'
       )?.textContent?.trim() ?? '';

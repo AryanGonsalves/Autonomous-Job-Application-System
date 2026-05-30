@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { type Page } from "playwright";
-import { getContextWithSession, getStealthContextWithSession, createFreshStealthContext } from "./browser";
+import { getContextWithSession, createFreshStealthContext } from "./browser";
 import { generateAtsAnswer, generateYesNoAnswer } from "./aiClient";
 import { addLog } from "./automationLog";
 import { getSetting } from "./settings";
@@ -290,25 +290,44 @@ async function fillScreeningQuestions(
     if (selectors.textInput) {
       const ti = await container.$(selectors.textInput);
       if (ti) {
-        // Detect numeric-only fields (type="number" or "how many years" questions)
-        // AI returns prose like "approximately 1 year" — extract the integer.
+        // Detect numeric-only fields (type="number" or keyword-based)
         const inputType = await ti.getAttribute("type").catch(() => "text") ?? "text";
         const isNumericField =
           inputType === "number" ||
+          qLower.startsWith("how many") ||         // catches "how many months", "how many projects", etc.
           qLower.includes("how many years") ||
           qLower.includes("years of experience") ||
           qLower.includes("years of work experience") ||
-          qLower.startsWith("number of years") ||
-          qLower.startsWith("# of years");
+          qLower.startsWith("number of") ||
+          qLower.startsWith("# of") ||
+          qLower.includes("notice period") ||
+          qLower.includes("your notice") ||
+          qLower.includes("notice?") ||
+          qLower.includes("salary") ||
+          qLower.includes("ctc") ||
+          qLower.includes("compensation") ||
+          qLower.includes("months of experience") ||
+          qLower.includes("months of hands-on");
 
         if (isNumericField) {
-          // Numeric fields: generate answer then extract the integer
-          const answer = await generateAtsAnswer(
-            questionText,
-            { jobTitle: job.jobTitle, company: job.company, jobDescription: job.jobDescription ?? "" },
-            resume
-          );
-          await ti.fill(extractYearsNumber(answer)).catch(() => {});
+          // For salary/notice fields, use domain-specific defaults instead of AI prose
+          let numericAnswer: string;
+          if (qLower.includes("current") && (qLower.includes("salary") || qLower.includes("ctc"))) {
+            numericAnswer = "0"; // Student/intern — no current salary
+          } else if (qLower.includes("expected") || qLower.includes("desired") || qLower.includes("expect")) {
+            numericAnswer = "7000"; // Expected monthly ~$7k (reasonable for new grad)
+          } else if (qLower.includes("notice") || qLower.includes("joining")) {
+            numericAnswer = "0"; // Can start immediately
+          } else {
+            // Generic: AI answer then extract number
+            const answer = await generateAtsAnswer(
+              questionText,
+              { jobTitle: job.jobTitle, company: job.company, jobDescription: job.jobDescription ?? "" },
+              resume
+            );
+            numericAnswer = extractYearsNumber(answer);
+          }
+          await ti.fill(numericAnswer).catch(() => {});
         } else {
           const maxChars = await detectCharLimit(ti);
           const answer = await generateAtsAnswer(
@@ -324,14 +343,40 @@ async function fillScreeningQuestions(
       }
     }
 
-    // Select element — pick first non-empty option
+    // Select element — use AI for yes/no questions, otherwise pick best matching option
     if (selectors.selectEl) {
       const sel = await container.$(selectors.selectEl);
       if (sel) {
         const options = await sel.$$eval("option", (opts: any[]) =>
-          opts.filter((o: any) => o.value).map((o: any) => o.value as string)
+          opts.filter((o: any) => o.value).map((o: any) => ({ value: o.value as string, text: (o.textContent ?? "").trim() }))
         );
-        if (options[0]) await sel.selectOption(options[0]);
+        if (options.length > 0) {
+          let chosenValue = options[0].value;
+
+          // For yes/no dropdowns, use AI to pick the right answer
+          const hasYesNo = options.some(o => /^yes$/i.test(o.text)) && options.some(o => /^no$/i.test(o.text));
+          if (hasYesNo) {
+            const answerYes = await generateYesNoAnswer(
+              questionText,
+              { jobTitle: job.jobTitle, company: job.company, jobDescription: job.jobDescription ?? "" },
+              resume
+            );
+            const yesOption = options.find(o => /^yes$/i.test(o.text));
+            const noOption = options.find(o => /^no$/i.test(o.text));
+            chosenValue = answerYes ? (yesOption?.value ?? chosenValue) : (noOption?.value ?? chosenValue);
+          }
+
+          // Set value and fire React-compatible change events
+          await sel.evaluate((el: HTMLSelectElement, val: string) => {
+            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")?.set;
+            nativeInputValueSetter?.call(el, val);
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+          }, chosenValue).catch(() => {});
+          // Also use playwright's built-in as fallback
+          await sel.selectOption(chosenValue).catch(() => {});
+          await page.waitForTimeout(300);
+        }
       }
     }
   }
@@ -799,46 +844,74 @@ async function submitLinkedIn(job: Job, resume: ParsedResume): Promise<void> {
 }
 
 // ─── Indeed Quick Apply ───────────────────────────────────────────────────────
-// Indeed headless submission times out on button clicks — element not visible.
-// Instantly skip so the run doesn't waste 30s per job.
+// Uses stealth browser + saved session. Session must be created via the Indeed
+// scraper's manual-login flow (Settings → Credentials → Login to Indeed).
 
-async function submitIndeed(job: Job, _resume: ParsedResume): Promise<void> {
-  await addLog("warn", `Indeed: submission skipped for "${job.jobTitle}" @ ${job.company} — headless browser blocked`, "indeed");
-  throw new Error("SESSION_EXPIRED: Indeed headless submission blocked");
-}
-
-async function _submitIndeedReal(job: Job, resume: ParsedResume): Promise<void> {
-  const ctx = await getStealthContextWithSession("indeed_session.json");
+async function submitIndeed(job: Job, resume: ParsedResume): Promise<void> {
+  const { ctx, closeBrowserFn } = await createFreshStealthContext("indeed_session.json");
   const page = await ctx.newPage();
 
   try {
-    // Warm-up: visit Indeed homepage first
+    // Warm-up: visit Indeed homepage to activate session cookies
     await page.goto("https://www.indeed.com/", { waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForTimeout(1200 + Math.random() * 800);
 
-    // Navigate to the job posting
-    await page.goto(job.applyUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(1000 + Math.random() * 800);
-
-    // Check if we got redirected to login
-    const currentUrl = page.url();
-    if (currentUrl.includes("/account/login") || currentUrl.includes("/auth")) {
-      throw new Error("SESSION_EXPIRED: Indeed session expired — re-authenticate in Settings");
+    // Check session validity on homepage
+    const homeUrl = page.url();
+    if (homeUrl.includes("/account/login") || homeUrl.includes("/auth")) {
+      throw new Error("SESSION_EXPIRED: Indeed session expired — log in via Settings → Credentials");
     }
 
-    const applyBtn = await page.$(
-      'button[id*="apply"], a[id*="apply"], button:has-text("Apply now"), button:has-text("Apply")'
-    );
-    if (!applyBtn) throw new Error("Indeed: Apply button not found");
-    await applyBtn.click();
-    await page.waitForTimeout(1500 + Math.random() * 500);
+    // Navigate to the job posting
+    await page.goto(job.applyUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.waitForTimeout(1500 + Math.random() * 800);
+
+    // Check for login redirect on job page
+    const jobUrl = page.url();
+    if (jobUrl.includes("/account/login") || jobUrl.includes("/auth")) {
+      throw new Error("SESSION_EXPIRED: Indeed session expired — log in via Settings → Credentials");
+    }
+
+    // Check job is still available
+    const pageText = await page.evaluate(() => document.body?.innerText?.toLowerCase() ?? "");
+    if (pageText.includes("job is no longer available") || pageText.includes("this job has expired")) {
+      throw new Error("Indeed: job is no longer available");
+    }
+
+    // Detect session expiry via soft-login overlay (session expired but URL didn't change)
+    if (
+      pageText.includes("sign in to apply") ||
+      pageText.includes("please sign in") ||
+      pageText.includes("log in to apply") ||
+      pageText.includes("create an account to apply") ||
+      pageText.includes("sign in to continue")
+    ) {
+      throw new Error("SESSION_EXPIRED: Indeed session expired — log in via Settings → Credentials");
+    }
+
+    // Click "Easily apply" / "Apply now" button to open the application modal
+    const applyBtn = page.locator(
+      '[data-testid="indeedApplyButton"], button:has-text("Easily apply"), button:has-text("Apply now"), .iaButton, [id*="indeedApplyButtonContainer"] button'
+    ).first();
+
+    const applyVisible = await applyBtn.isVisible().catch(() => false);
+    if (!applyVisible) {
+      // Check one more time for session expiry — soft login might appear after a delay
+      const postCheckText = await page.evaluate(() => document.body?.innerText?.toLowerCase() ?? "").catch(() => "");
+      if (postCheckText.includes("sign in") && postCheckText.includes("apply")) {
+        throw new Error("SESSION_EXPIRED: Indeed session expired — log in via Settings → Credentials");
+      }
+      throw new Error("Indeed: Apply button not found — job may require external application");
+    }
+    await applyBtn.click({ force: true });
+    await page.waitForTimeout(2000 + Math.random() * 800);
 
     const resumePath = await getResumePath();
 
-    for (let step = 0; step < 8; step++) {
-      await page.waitForTimeout(600 + Math.random() * 600);
+    for (let step = 0; step < 10; step++) {
+      await page.waitForTimeout(800 + Math.random() * 600);
 
-      // Resume upload
+      // Resume upload (Indeed's modal has a file input)
       if (resumePath) {
         const fileInput = await page.$('input[type="file"]');
         if (fileInput) {
@@ -850,58 +923,99 @@ async function _submitIndeedReal(job: Job, resume: ParsedResume): Promise<void> 
       // Cover letter
       if (job.coverLetterText) {
         const clArea = await page.$('textarea[aria-label*="cover letter" i], textarea[name*="cover"]');
-        if (clArea) await clArea.fill(job.coverLetterText);
+        if (clArea) await clArea.fill(job.coverLetterText).catch(() => {});
       }
 
       // Screening questions
       await fillScreeningQuestions(page, job, resume, {
-        questionContainer: '[data-testid="question-container"], .ia-Questions-item',
+        questionContainer: '[data-testid="question-container"], .ia-Questions-item, [class*="JobsQuestions"]',
         labelEl: "label, legend, span",
         yesRadio: 'input[type="radio"][value="YES"], input[type="radio"][value="yes"]',
         noRadio: 'input[type="radio"][value="NO"], input[type="radio"][value="no"]',
         textarea: "textarea",
         textInput: 'input[type="text"]',
         selectEl: "select",
-      });
+      }).catch(() => {});
 
-      // Submit
-      const submitBtn = await page.$(
-        'button[data-testid="submit-button"], button:has-text("Submit"), button[type="submit"]'
-      );
-      if (submitBtn) {
-        await submitBtn.click();
+      // Check for Submit button first
+      const submitLoc = page.locator(
+        'button[data-testid="submit-button"], button:has-text("Submit your application"), button:has-text("Submit application")'
+      ).first();
+      if (await submitLoc.isVisible().catch(() => false)) {
+        await submitLoc.click({ force: true });
         await page.waitForTimeout(2000);
-        await addLog("info", `Indeed: submitted application for "${job.jobTitle}" at ${job.company}`, "indeed");
-        return;
+
+        // Confirm submission
+        const confirmed = await page.evaluate(() => {
+          const t = document.body?.innerText?.toLowerCase() ?? "";
+          return t.includes("application submitted") || t.includes("successfully applied") || t.includes("your application was sent");
+        }).catch(() => false);
+
+        if (confirmed) {
+          await addLog("info", `Indeed: submitted application for "${job.jobTitle}" at ${job.company}`, "indeed");
+          return;
+        }
+        // If no confirmation text, assume success if modal closed
+        const modalGone = await page.$('[data-testid="question-container"], .ia-Questions-item').catch(() => null);
+        if (!modalGone) {
+          await addLog("info", `Indeed: submitted application for "${job.jobTitle}" at ${job.company} (modal closed)`, "indeed");
+          return;
+        }
       }
 
-      // Continue / Next
-      const nextBtn = await page.$(
+      // Continue / Next button
+      const nextLoc = page.locator(
         'button[data-testid="continue-button"], button:has-text("Continue"), button:has-text("Next")'
-      );
-      if (nextBtn) {
-        await nextBtn.click();
+      ).first();
+      if (await nextLoc.isVisible().catch(() => false)) {
+        await nextLoc.click({ force: true });
         await page.waitForTimeout(800 + Math.random() * 500);
       } else {
-        throw new Error("Indeed: stuck — no Continue or Submit button found");
+        throw new Error(`Indeed: stuck at step ${step} — no Continue or Submit button found`);
       }
     }
 
-    throw new Error("Indeed: application did not reach submit after 8 steps");
+    throw new Error("Indeed: application did not reach submit after 10 steps");
   } finally {
-    await page.close();
-    await ctx.close();
+    await page.close().catch(() => {});
+    await closeBrowserFn();
   }
 }
 
 // ─── Greenhouse Direct Portal ─────────────────────────────────────────────────
 
 async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
-  const ctx = await getContextWithSession("greenhouse_session.json");
+  const { ctx, closeBrowserFn } = await createFreshStealthContext("greenhouse_session.json");
   const page = await ctx.newPage();
 
   try {
-    await page.goto(job.applyUrl, { waitUntil: "networkidle", timeout: 45000 });
+    // Greenhouse's absolute_url points to the job listing page (e.g. boards.greenhouse.io/company/jobs/123)
+    // For standard Greenhouse-hosted pages, /apply goes before any query string.
+    // For custom careers pages (careers.roblox.com, pubmatic.com, etc.) the form is
+    // embedded directly — use the URL as-is so the iframe detection below picks it up.
+    let applyUrl: string;
+    try {
+      const u = new URL(job.applyUrl);
+      const pathNoSlash = u.pathname.replace(/\/$/, "");
+      if (pathNoSlash.endsWith("/apply")) {
+        applyUrl = job.applyUrl; // already correct
+      } else if (u.hostname.includes("greenhouse.io")) {
+        // Standard Greenhouse board — insert /apply before query string
+        u.pathname = pathNoSlash + "/apply";
+        applyUrl = u.toString();
+      } else {
+        // Custom careers page (e.g. careers.roblox.com, pubmatic.com)
+        // Greenhouse form loads inside an iframe — navigate to listing page as-is
+        applyUrl = job.applyUrl;
+      }
+    } catch {
+      // Fallback: original naive append (handles any edge cases)
+      applyUrl = job.applyUrl.replace(/\/?$/, "").endsWith("/apply")
+        ? job.applyUrl
+        : job.applyUrl.replace(/\/?$/, "") + "/apply";
+    }
+
+    await page.goto(applyUrl, { waitUntil: "networkidle", timeout: 45000 });
     await page.waitForTimeout(1500 + Math.random() * 800);
 
     // Verify page is live — check for 404/closed indicators
@@ -917,29 +1031,32 @@ async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
 
     const resumePath = await getResumePath();
 
-    // Detect if Greenhouse form is embedded in an iframe
-    const ghIframe = await page.$(
-      'iframe[src*="greenhouse.io"], iframe[src*="boards.greenhouse"], div#grnhse_app iframe'
+    // Resolve the scope that actually contains the Greenhouse form. Custom
+    // career pages (Roblox, PubMatic, Braze) embed the form in an iframe whose
+    // src does NOT always contain "greenhouse.io" — it may be the #grnhse_app
+    // container, or titled "greenhouse". Match broadly and operate on the real
+    // Frame object (page.frameLocator only matched a hard-coded src and missed
+    // these, which caused "submit button not found" on Roblox).
+    await page.waitForTimeout(800);
+    let formScope: Page | import("playwright").Frame = page;
+    const ghFrameEl = await page.$(
+      'iframe[src*="greenhouse"], iframe[src*="grnhse"], iframe[id*="grnhse"], #grnhse_app iframe, iframe[title*="greenhouse" i], iframe[title*="job application" i]'
     );
-
-    // We use frameLocator for iframe forms; otherwise use the page directly via locator
-    const iframeSelector = 'iframe[src*="greenhouse.io"], iframe[src*="boards.greenhouse"]';
-    const root = ghIframe ? page.frameLocator(iframeSelector) : null;
-
-    async function fill(selector: string, value: string): Promise<void> {
-      if (root) {
-        await root.locator(selector).first().fill(value).catch(() => {});
-      } else {
-        await page.locator(selector).first().fill(value).catch(() => {});
+    if (ghFrameEl) {
+      const f = await ghFrameEl.contentFrame().catch(() => null);
+      if (f) {
+        formScope = f;
+        // Give the embedded form time to render its fields
+        await f.waitForSelector('input, textarea, button', { timeout: 8000 }).catch(() => {});
       }
     }
 
+    async function fill(selector: string, value: string): Promise<void> {
+      await formScope.locator(selector).first().fill(value).catch(() => {});
+    }
+
     async function upload(selector: string, filePath: string): Promise<void> {
-      if (root) {
-        await root.locator(selector).first().setInputFiles(filePath).catch(() => {});
-      } else {
-        await page.locator(selector).first().setInputFiles(filePath).catch(() => {});
-      }
+      await formScope.locator(selector).first().setInputFiles(filePath).catch(() => {});
     }
 
     // Standard Greenhouse fields
@@ -965,9 +1082,7 @@ async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
     }
 
     // Custom questions — iterate by label text and fill intelligently
-    const questionLocator = root
-      ? root.locator('[data-field-type], .field-container, .custom-field')
-      : page.locator('[data-field-type], .field-container, .custom-field');
+    const questionLocator = formScope.locator('[data-field-type], .field-container, .custom-field');
 
     const questionCount = await questionLocator.count();
     for (let i = 0; i < questionCount; i++) {
@@ -983,16 +1098,58 @@ async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
 
       const taCount = await q.locator("textarea").count();
       const tiCount = await q.locator('input[type="text"]').count();
-      if (taCount > 0) await q.locator("textarea").first().fill(answer).catch(() => {});
-      else if (tiCount > 0) await q.locator('input[type="text"]').first().fill(answer).catch(() => {});
+      const numCount = await q.locator('input[type="number"]').count();
+
+      // Coerce numeric fields (years of experience, salary, notice) to a bare
+      // number — prose answers fail Greenhouse's "enter a number" validation.
+      const ql = labelText.toLowerCase();
+      const isNumericQ =
+        numCount > 0 ||
+        ql.includes("how many years") ||
+        ql.includes("years of experience") ||
+        ql.includes("years of work experience") ||
+        ql.includes("salary") ||
+        ql.includes("compensation") ||
+        ql.includes("ctc") ||
+        ql.includes("notice");
+      let finalAnswer = answer;
+      if (isNumericQ) {
+        if (ql.includes("current") && (ql.includes("salary") || ql.includes("ctc"))) finalAnswer = "0";
+        else if (ql.includes("expected") || ql.includes("desired") || ql.includes("expect")) finalAnswer = "85000";
+        else if (ql.includes("notice") || ql.includes("joining")) finalAnswer = "0";
+        else finalAnswer = extractYearsNumber(answer);
+      }
+
+      if (numCount > 0) await q.locator('input[type="number"]').first().fill(finalAnswer).catch(() => {});
+      else if (taCount > 0) await q.locator("textarea").first().fill(finalAnswer).catch(() => {});
+      else if (tiCount > 0) await q.locator('input[type="text"]').first().fill(finalAnswer).catch(() => {});
     }
 
-    // Submit — verify the button exists before clicking
-    const submitLocator = root
-      ? root.locator('input[type="submit"], button[type="submit"]').first()
-      : page.locator('input[type="submit"], button[type="submit"]').first();
+    // Submit — try multiple selectors to handle standard + custom Greenhouse embeds
+    // Some companies (Roblox, PubMatic, Braze) use custom styling without type="submit"
+    const submitSelectors = [
+      'input[type="submit"]',
+      'button[type="submit"]',
+      'button[id*="submit"]',
+      'button[class*="submit"]',
+      'button:has-text("Submit Application")',
+      'button:has-text("Submit")',
+      'button:has-text("Apply")',
+      'a[class*="submit"]',
+    ];
 
-    const submitCount = await submitLocator.count();
+    let submitLocator = formScope.locator(submitSelectors[0]).first();
+
+    let submitCount = 0;
+    for (const sel of submitSelectors) {
+      const loc = formScope.locator(sel).first();
+      submitCount = await loc.count().catch(() => 0);
+      if (submitCount > 0) {
+        submitLocator = loc;
+        break;
+      }
+    }
+
     if (submitCount === 0) {
       throw new Error(`Greenhouse: submit button not found on ${page.url()}`);
     }
@@ -1026,15 +1183,15 @@ async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
       "greenhouse"
     );
   } finally {
-    await page.close();
-    await ctx.close();
+    await page.close().catch(() => {});
+    await closeBrowserFn();
   }
 }
 
 // ─── Lever Apply ─────────────────────────────────────────────────────────────
 
 async function submitLever(job: Job, resume: ParsedResume): Promise<void> {
-  const ctx = await getContextWithSession("lever_session.json");
+  const { ctx, closeBrowserFn } = await createFreshStealthContext("lever_session.json");
   const page = await ctx.newPage();
 
   try {
@@ -1145,20 +1302,35 @@ async function submitLever(job: Job, resume: ParsedResume): Promise<void> {
 
     await addLog("info", `Lever: submitted application for "${job.jobTitle}" at ${job.company}`, "lever");
   } finally {
-    await page.close();
-    await ctx.close();
+    await page.close().catch(() => {});
+    await closeBrowserFn();
   }
 }
 
 // ─── Handshake Apply ─────────────────────────────────────────────────────────
 
 async function submitHandshake(job: Job, resume: ParsedResume): Promise<void> {
-  const ctx = await getContextWithSession("handshake_asu_session.json");
+  const { ctx, closeBrowserFn } = await createFreshStealthContext("handshake_asu_session.json");
   const page = await ctx.newPage();
 
   try {
+    // Warm up on Handshake root to activate session
+    await page.goto("https://app.joinhandshake.com/", { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.waitForTimeout(1000 + Math.random() * 500);
+
+    const homeUrl = page.url();
+    if (homeUrl.includes("/login") || homeUrl.includes("/sign_in") || homeUrl.includes("/users/sign_in")) {
+      throw new Error("SESSION_EXPIRED: Handshake session expired — log in via Settings → Credentials");
+    }
+
     await page.goto(job.applyUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForTimeout(1000 + Math.random() * 800);
+
+    // Check for login redirect on job page
+    const jobUrl = page.url();
+    if (jobUrl.includes("/login") || jobUrl.includes("/sign_in")) {
+      throw new Error("SESSION_EXPIRED: Handshake session expired — log in via Settings → Credentials");
+    }
 
     const applyBtn = await page.$(
       'button:has-text("Apply"), [data-testid="apply-button"], button[aria-label*="apply" i]'
@@ -1202,7 +1374,7 @@ async function submitHandshake(job: Job, resume: ParsedResume): Promise<void> {
 
     await addLog("info", `Handshake: submitted application for "${job.jobTitle}" at ${job.company}`, "handshake");
   } finally {
-    await page.close();
-    await ctx.close();
+    await page.close().catch(() => {});
+    await closeBrowserFn();
   }
 }

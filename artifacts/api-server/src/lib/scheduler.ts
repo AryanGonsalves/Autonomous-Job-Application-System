@@ -2,7 +2,7 @@ import { logger } from "./logger";
 import { addLog } from "./automationLog";
 import { parseSettings, getAllSettings, setSetting } from "./settings";
 import { db, jobsTable, applicationsTable, runHistoryTable, resumeTable } from "@workspace/db";
-import { eq, gte, count, desc, and, isNull } from "drizzle-orm";
+import { eq, gte, count, desc, and, isNull, sql } from "drizzle-orm";
 import { scrapeGreenhouseJobs } from "./greenhouse";
 import { scrapeLinkedIn } from "./scrapers/linkedin";
 import { scrapeIndeed } from "./scrapers/indeed";
@@ -312,10 +312,14 @@ export async function runPipeline(triggeredBy: "scheduled" | "manual" = "manual"
         const remaining = settings.dailyLimit - appliedToday;
         await addLog("info", `Can apply to ${remaining} more jobs today`);
 
+        // Randomize order so all platforms (Greenhouse, Lever, LinkedIn) get
+        // fair coverage — without this SQLite returns insertion order and
+        // LinkedIn jobs always consume the daily limit before Greenhouse runs.
         const jobsToApply = await db
           .select()
           .from(jobsTable)
           .where(eq(jobsTable.status, "queued"))
+          .orderBy(sql`RANDOM()`)
           .limit(remaining);
 
         const resume = latestResume
@@ -356,13 +360,19 @@ export async function runPipeline(triggeredBy: "scheduled" | "manual" = "manual"
               const isRetryable =
                 errMsg.includes("SESSION_EXPIRED") ||
                 errMsg.includes("Easy Apply button not found") ||
+                errMsg.includes("Indeed: Apply button not found") || // May be session expiry, not external apply
+                errMsg.includes("did not reach submit after 35 steps") || // Long form hit step limit
+                errMsg.includes("stuck in Easy Apply modal") ||       // No Next/Submit — transient render issue
                 errMsg.includes("authwall") ||
                 errMsg.includes("ERR_ABORTED") ||
                 errMsg.includes("Target closed") ||
-                errMsg.includes("JOB_TIMEOUT");
+                errMsg.includes("JOB_TIMEOUT") ||
+                errMsg.includes("IMAP connect timeout") ||
+                errMsg.includes("net::ERR_") ||
+                errMsg.includes("Timeout");
               await db
                 .update(jobsTable)
-                .set({ status: isRetryable ? "skipped" : "failed" })
+                .set({ status: isRetryable ? "skipped" : "failed", notes: errMsg.slice(0, 500) })
                 .where(eq(jobsTable.id, job.id));
               if (isRetryable) {
                 await addLog(

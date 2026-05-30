@@ -12,7 +12,12 @@ const artifactDir = path.dirname(fileURLToPath(import.meta.url));
 
 async function buildAll() {
   const distDir = path.resolve(artifactDir, "dist");
-  await rm(distDir, { recursive: true, force: true });
+  // force:true suppresses ENOENT but not EPERM — catch EPERM so a locked
+  // pino-worker.mjs (held by a lingering process) doesn't abort the build.
+  await rm(distDir, { recursive: true, force: true }).catch((err) => {
+    if (err.code !== "EPERM" && err.code !== "EBUSY") throw err;
+    // File locked — esbuild will overwrite individual files instead
+  });
 
   await esbuild({
     entryPoints: [path.resolve(artifactDir, "src/index.ts")],

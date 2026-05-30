@@ -11,7 +11,9 @@ import { getOpenAIClient } from "./aiClient";
 export interface ImportResult {
   imported: number;
   updated: number;
+  confirmed: number;
   details: Array<{ company: string; oldStatus: string; newStatus: string }>;
+  confirmations: Array<{ company: string; jobTitle: string; emailDate: string }>;
 }
 
 const STATUS_PRIORITY: Record<string, number> = {
@@ -95,16 +97,58 @@ function extractCompanyFromSubject(subject: string): string | null {
   return null;
 }
 
-async function connectImap(host: string, email: string, password: string): Promise<ImapFlow> {
+function buildImapClient(host: string, email: string, password: string): ImapFlow {
   const client = new ImapFlow({
     host,
     port: 993,
     secure: true,
     auth: { user: email, pass: password },
     logger: false,
+    // Prevent connection from hanging indefinitely
+    socketTimeout: 30000,
+    greetingTimeout: 15000,
+    // Don't hold an IDLE channel — Yahoo aggressively drops idle sockets,
+    // which surfaced as "Connection not available" on the next command.
+    disableAutoIdle: true,
+    // Keep-alive to stop Yahoo from dropping idle connections
+    tls: { rejectUnauthorized: false },
   });
-  await client.connect();
+  // Swallow async socket errors so a mid-stream drop can't crash the process;
+  // the usability check below turns it into a clean per-account failure instead.
+  client.on("error", () => { /* handled via client.usable checks */ });
   return client;
+}
+
+async function connectImap(host: string, email: string, password: string): Promise<ImapFlow> {
+  // Yahoo intermittently resets the first connection; retry once on failure.
+  let lastErr: unknown = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const client = buildImapClient(host, email, password);
+    try {
+      await Promise.race([
+        client.connect(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("IMAP connect timeout after 30s")), 30000)
+        ),
+      ]);
+      // ImapFlow can resolve connect() yet immediately mark the connection
+      // unusable (Yahoo policy/auth). Verify before handing it back.
+      if (!(client as unknown as { usable?: boolean }).usable) {
+        throw new Error("connection closed immediately after connect (usable=false)");
+      }
+      return client;
+    } catch (err) {
+      lastErr = err;
+      await safeLogout(client);
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+async function safeLogout(client: ImapFlow | null): Promise<void> {
+  if (!client) return;
+  try { await client.logout(); } catch { /* ignore */ }
 }
 
 interface ParsedEmail {
@@ -152,7 +196,12 @@ export async function runEmailImport(): Promise<ImportResult> {
     configs.push({ host: "imap.mail.yahoo.com", email: raw.imapYahooEmail, password: raw.imapYahooAppPassword });
   }
 
-  const result: ImportResult = { imported: 0, updated: 0, details: [] };
+  const result: ImportResult = { imported: 0, updated: 0, confirmed: 0, details: [], confirmations: [] };
+
+  // Whether to import manually-applied jobs found in the Sent folder as
+  // application records. OFF by default so the bot's own applications are
+  // never conflated with jobs the user applied to by hand.
+  const importManualFromSent = raw.importManualFromSent === "true";
 
   if (configs.length === 0) {
     await addLog("warn", "Email import: no IMAP credentials configured — skipping", "email");
@@ -165,6 +214,8 @@ export async function runEmailImport(): Promise<ImportResult> {
       id: applicationsTable.id,
       jobId: applicationsTable.jobId,
       status: applicationsTable.status,
+      appliedAt: applicationsTable.appliedAt,
+      notes: applicationsTable.notes,
       company: jobsTable.company,
       jobTitle: jobsTable.jobTitle,
       applyUrl: jobsTable.applyUrl,
@@ -180,24 +231,62 @@ export async function runEmailImport(): Promise<ImportResult> {
       await addLog("info", `Email import: connecting to ${cfg.host}`, "email");
       client = await connectImap(cfg.host, cfg.email, cfg.password);
 
-      // Fetch inbox emails for status updates (last 30 days)
-      const inboxEmails = await fetchRecentEmails(client, "INBOX", 30);
+      // Fetch inbox emails for status updates (last 14 days — keeps it fast)
+      const inboxEmails = await fetchRecentEmails(client, "INBOX", 14);
       await addLog("info", `Email import: fetched ${inboxEmails.length} inbox emails`, "email");
 
       // Part B: update statuses from existing applications
       for (const app of existingApps) {
         const companyLower = app.company.toLowerCase();
 
+        // Use word-boundary regex so short names like "pipe" don't match
+        // random occurrences of that word in unrelated email bodies.
+        // For companies with < 5 chars, require the match to be in the
+        // From address or Subject only — body matches are too noisy.
+        const companyRegex = new RegExp(`\\b${companyLower.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+        const isShortName = companyLower.length < 5;
+
         const relevant = inboxEmails.filter((e) => {
           const subjectLower = e.subject.toLowerCase();
           const fromLower = e.from.toLowerCase();
           const bodySnippet = e.body.slice(0, 400).toLowerCase();
-          return (
-            subjectLower.includes(companyLower) ||
-            fromLower.includes(companyLower) ||
-            bodySnippet.includes(companyLower)
-          );
+
+          const inSubject = companyRegex.test(subjectLower);
+          const inFrom = companyRegex.test(fromLower);
+          const inBody = !isShortName && companyRegex.test(bodySnippet);
+
+          return inSubject || inFrom || inBody;
         });
+
+        // Confirmation verification: a confirmation email that arrived at or
+        // after the bot submitted this application proves the bot's apply
+        // landed. Emails dated BEFORE appliedAt belong to an earlier manual
+        // application for the same company and are deliberately ignored.
+        const appliedAtMs = app.appliedAt ? new Date(app.appliedAt).getTime() : 0;
+        const alreadyConfirmed = (app.notes ?? "").includes("[confirmed]");
+        if (!alreadyConfirmed) {
+          const confirmEmail = relevant.find(
+            (e) =>
+              isConfirmationEmail(e.subject, e.body) &&
+              e.date.getTime() >= appliedAtMs - 5 * 60 * 1000 // 5-min clock skew grace
+          );
+          if (confirmEmail) {
+            const note = `[confirmed] ${confirmEmail.date.toISOString()} — ${(
+              app.notes ?? ""
+            ).replace(/^\[confirmed\][^\n]*\n?/, "")}`.slice(0, 500);
+            await db
+              .update(applicationsTable)
+              .set({ notes: note })
+              .where(eq(applicationsTable.id, app.id));
+            app.notes = note;
+            result.confirmed++;
+            result.confirmations.push({
+              company: app.company,
+              jobTitle: app.jobTitle,
+              emailDate: confirmEmail.date.toISOString(),
+            });
+          }
+        }
 
         for (const email of relevant) {
           const newStatus = await classifyStatus(email.subject, email.body, app.company);
@@ -232,7 +321,21 @@ export async function runEmailImport(): Promise<ImportResult> {
         }
       }
 
-      // Part A: import new applications from sent folder (last 90 days)
+      // Part A: import new applications from sent folder (last 90 days).
+      // Disabled by default — importing manually-applied jobs here conflates
+      // the user's hand-submitted applications with the bot's. Enable only via
+      // the importManualFromSent setting.
+      if (!importManualFromSent) {
+        await addLog(
+          "info",
+          "Email import: skipping Sent-folder manual import (importManualFromSent is off)",
+          "email"
+        );
+        await safeLogout(client);
+        client = null;
+        await new Promise((r) => setTimeout(r, 2000));
+        continue;
+      }
       const sentFolders = ["[Gmail]/Sent Mail", "Sent", "Sent Items", "INBOX.Sent"];
       let sentEmails: ParsedEmail[] = [];
       for (const folder of sentFolders) {
@@ -281,24 +384,21 @@ export async function runEmailImport(): Promise<ImportResult> {
         }
       }
 
-      await client.logout();
+      await safeLogout(client);
       client = null;
     } catch (err) {
       await addLog("error", `Email import error for ${cfg.host}: ${err}`, "email");
     } finally {
-      if (client) {
-        try {
-          await client.logout();
-        } catch {
-          // ignore logout errors
-        }
-      }
+      await safeLogout(client);
+      client = null;
     }
+    // Brief pause between accounts to avoid rate limiting
+    await new Promise(r => setTimeout(r, 2000));
   }
 
   await addLog(
     "info",
-    `Email import complete: imported ${result.imported} new, updated ${result.updated} statuses`,
+    `Email import complete: imported ${result.imported} new, updated ${result.updated} statuses, ${result.confirmed} confirmations matched`,
     "email"
   );
   return result;
