@@ -96,3 +96,5 @@ replit.md
 **/.replit-artifact/
 attached_assets/
 artifacts/mockup-sandbox/
+_startup.log
+_gitop.log
