@@ -16,6 +16,10 @@
 - All code fixes committed and **force-pushed to `main`**; **all commits rewritten to author AryanGonsalves (replit-agent removed)** via the `git-push.bat` filter-branch flow.
 - `CLAUDE.md` is **gitignored** (local agent context only) — session findings live there locally and in this HANDOFF.md (tracked).
 
+### Restart race fixed + Indeed re-enabled (later in session)
+- **`kill-and-restart.bat` rewritten** to fix the EADDRINUSE race that caused stale code to keep serving: it now kills only the PID LISTENING on :3000, then **polls until the port is free (up to ~40s)** before rebuild+start. Verified live (server returns 200 cleanly). Pushed.
+- **Indeed re-enabled (config):** `submitIndeed` is a complete implementation, not a stub; it was disabled by `enableIndeed="false"` in the DB. Set to `"true"` (persisted). **Still requires a one-time manual Indeed login** to create `sessions/indeed_session.json` — until then submissions throw `SESSION_EXPIRED` → `skipped` (retryable). Agent cannot perform the login (credentials). Flip back to `"false"` if the per-attempt waste (~15–30s) is undesirable before logging in.
+
 ---
 
 ## Current State (as of 2026-05-28, 4:30 PM local)
