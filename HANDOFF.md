@@ -1,5 +1,23 @@
 # Job Apply Bot — Full Handoff Context for New Conversation
 
+## ⚠️ Session 2026-05-31 — Findings & Fixes (READ FIRST)
+
+- **248 applications all-time; 425 queued.** Server verified healthy on :3000 with all fixes compiled into `dist`.
+- **Root cause of "fixes not working": the rebuild had been silently failing.** Restarts via `kill-and-restart.bat` raced an email-import-saturated node process that held port 3000, so the freshly built server crashed on `listen()` (EADDRINUSE) and the **old, stale-code** process kept serving. After clearing the stuck process and rebuilding cleanly (`BUILD_EXITCODE=0`, "Server listening port 3000"), `dist/index.mjs` now contains every fix. **Always confirm `GET /api/scheduler/status` returns 200 AND new code is live after a restart; if an email import is running, wait for it (or kill node) before restarting.** `_diag-restart.bat` rebuilds and tees stdout to `_startup.log` for diagnosis.
+- **Submission success rate ~15%, dominated by LinkedIn ATS-overlay (Workable/Ceipal) validation failures** — a known/expected limitation. Retryable failures cycle back to `queued` each run. Phase 3 has no priority ORDER BY, so LinkedIn jobs can consume the daily budget before higher-yield Greenhouse/Lever (API-based) are reached. **Recommended:** prioritise greenhouse/lever in phase-3 `jobsToApply`, or give them a separate sub-budget.
+
+### Fixes applied & pushed this session
+- **Greenhouse submitter (`submitter.ts`):** resolves the real embedded `Frame` via a broad selector (`#grnhse_app iframe, iframe[id*="grnhse"], iframe[title*="greenhouse"]`, …) instead of a hard-coded `iframe[src*="greenhouse.io"]` — fixes "submit button not found" on Roblox/PubMatic custom career pages. Custom-question loop now coerces numeric fields (years/salary/notice) to a bare number (defaults: current salary `0`, expected/desired `85000` annual, notice `0`, else `extractYearsNumber()`).
+- **Email importer (`emailImporter.ts`):** (1) Sent-folder manual import is gated behind `importManualFromSent` (default `false`) so manual applies are never conflated with the bot's. (2) New confirmation tracking flags a bot application confirmed only when a confirmation email arrives at/after that app's `appliedAt` (5-min skew grace), writing `[confirmed] <ISO>` to `applications.notes`; result includes `confirmed`/`confirmations`. (3) Yahoo IMAP hardened (`disableAutoIdle`, `greetingTimeout`, post-connect `usable` check, `error` handler, one reconnect retry) — Yahoo now connects and fetches ~760 emails. **49 bot applications have verified confirmations** as of this session.
+- **`settings.ts`:** added `importManualFromSent` default.
+- Plain confirmation emails never change status — only AI-classified rejected/interview/offer do, so "updated 0 statuses" is normal when only confirmations exist.
+
+### Git / repo
+- All code fixes committed and **force-pushed to `main`**; **all commits rewritten to author AryanGonsalves (replit-agent removed)** via the `git-push.bat` filter-branch flow.
+- `CLAUDE.md` is **gitignored** (local agent context only) — session findings live there locally and in this HANDOFF.md (tracked).
+
+---
+
 ## Current State (as of 2026-05-28, 4:30 PM local)
 
 - **189 total applications submitted** (all-time)
