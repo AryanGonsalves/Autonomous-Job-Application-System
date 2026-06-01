@@ -208,6 +208,84 @@ GET  /api/questions?needsReview=true — ATS questions needing answers
 - Filtered non-US: **235**
 - Run history: 44 runs total
 
+---
+
+## Run Verification 2026-06-01
+
+**Run triggered**: 09:04 UTC (manual via POST /api/scheduler/run-now). Monitored for ~50 minutes. Run still active at verification end.
+
+### Scraping Phase (completed ~09:13 UTC)
+| Platform | Scraped | Filtered non-US | Notes |
+|---|---|---|---|
+| LinkedIn | 17 new jobs | 2 | 4 keywords × ~14 cards each |
+| Greenhouse | 6 new jobs | 0 | 180 companies, API-based |
+| Lever | 0 new jobs | 26 | 83 companies, already in DB |
+| Handshake (ASU) | 0 new jobs | 0 | SSO login successful, no new listings |
+| Indeed | FAILED | — | TimeoutError: 3-min login window expired; no session file |
+- Total new: 23 jobs scraped this run
+- Indeed scraping failed because `enableIndeed=true` but no `sessions/indeed_session.json` exists; wastes ~3min per run
+
+### Submission Phase (applying, observed 09:15–09:47+ UTC)
+| Platform | Submitted | Failed/Skipped | Top failure reason |
+|---|---|---|---|
+| **LinkedIn** | **3** | ~15+ | JOB_TIMEOUT (long forms >4min), Easy Apply not found, ATS overlays |
+| **Greenhouse** | **1** | 5 | Custom career page redirect (Roblox, Figma, Robinhood), submit btn not found (Affirm) |
+| **Lever** | **0** | 0 | No queued Lever jobs reached in observed window |
+| **Indeed** | **0** | 1 | "job is no longer available" (job 57, ClearSky Solar) |
+| **Handshake** | **0** | 0 | No queued Handshake jobs reached |
+
+**Total submitted during monitoring: 4 applications** (3 LinkedIn + 1 Greenhouse)
+- totalAllTime went 249 → 253 during monitoring
+- totalToday = 4 confirmed
+
+**LinkedIn successes** (observed):
+1. "DOMO Certified Business Analyst" at Minisoft Technologies LLC — modal-detached (09:33 UTC)
+2. "Quantitative Researcher" at Durlston Partners — modal-detached (09:39 UTC)
+3. "Jr. Business Analyst" at Marathon TS — modal-detached (09:42 UTC)
+
+**Greenhouse success**:
+1. "Sr. Machine Learning Engineer, Responsible AI – Applied Research Science" at Pinterest (09:43 UTC)
+
+### Greenhouse "Submit Button Not Found" — Status
+**PARTIALLY FIXED, NOT FULLY RESOLVED.** The iframe-resolution fix (from 2026-05-31) works for some Greenhouse forms. Observed this run:
+- **Affirm** (job 1161, "Business Systems Analyst II"): still throws "Greenhouse: submit button not found on [URL]" — the standard Greenhouse board, not a custom page
+- **Chime, Figma x2, Robinhood, Roblox**: "no application form found — likely a custom career page" (these are custom redirects, correctly identified as such and skipped retryably)
+- **The Trade Desk** (job 1199): "form still present after submit — possible validation error"
+- **Pinterest** (job 934, 1019): one previously failed (browser closed), one **succeeded** this run at Pinterest
+- **Net**: the submit-button-not-found error still occurs on standard Greenhouse boards (Affirm confirmed). The iframe fix resolves embedded-iframe cases but not all standard board flows.
+
+### Email Import Results
+Email import ran at 09:37 UTC (triggered manually via POST /api/import/email):
+- Gmail: fetched 179 inbox emails
+- Yahoo: fetched 716 inbox emails
+- Imported 0 new applications, updated 0 statuses, **1 confirmation matched**
+- Prior confirmed total was 49; now **50 confirmed applications** (49 previously documented + 1 new from this import run)
+- importManualFromSent=false (Sent folder scan disabled, correct)
+
+### Current Stats (as of ~09:47 UTC)
+- **totalAllTime**: 253 submitted applications
+- **totalToday**: 4
+- **totalQueued**: 433
+- **totalFailed**: 3 (1 new: Indeed "job no longer available")
+- **Confirmed applications**: ~50 (49 prior + 1 from this import)
+- Platform breakdown (all-time applications): LinkedIn 178, Lever 39, Greenhouse 7
+
+### Recommended Code Fixes / Improvements
+
+1. **Disable Indeed or fix session**: `enableIndeed=true` with no session file wastes 3+ min per run and causes a hard `application failed` error (not retryable). Either set `enableIndeed=false` until login is done, or make the scraper skip gracefully when no session file exists rather than opening a browser login window that times out.
+
+2. **Greenhouse submit-button-not-found (Affirm-type)**: The iframe fix resolved embedded cases but standard Greenhouse boards like Affirm still fail. Need to investigate why the submit button selector chain fails for Affirm specifically — the form loads but no button is found. May need a broader selector or a wait-for-form-ready check before looking for the button.
+
+3. **LinkedIn JOB_TIMEOUT on very long forms (DriveWealth, ALO ERP)**: These jobs hit the 4-minute per-job limit at steps 7+. The DriveWealth form has 20+ pages noted in CLAUDE.md. These re-queue forever (retryable). Consider adding a `maxRetries` counter per job and marking them permanently failed/skipped after N retries to stop wasting budget on them.
+
+4. **LinkedIn "Easy Apply button not found" on non-US/expired jobs**: Multiple skips per run on jobs that redirect to `/jobs` homepage or are non-US (Turing, ERMA, BeaconFire). These re-queue but won't ever succeed. Consider: after N skips of this type, mark permanently skipped; or re-check job status before attempting.
+
+5. **Indeed "job no longer available" as hard failure**: The Indeed submitter marks this as a non-retryable `failed` (confirmed: totalFailed incremented). It should be retryable (mark skipped) since it's a stale job state issue.
+
+6. **Prioritize Greenhouse/Lever over LinkedIn in phase 3**: RANDOM() ordering now ensures fairness but Greenhouse/Lever jobs still compete with LinkedIn. Per previous recommendation, consider giving them a guaranteed sub-budget of N jobs per run to ensure API-based platforms always get a chance.
+
+7. **The Trade Desk Greenhouse form validation error**: "form still present after submit" suggests a required field isn't being filled. Could add more debug info or widen the question-filling logic for this board.
+
 ## Credentials (already configured in Settings)
 - LinkedIn: Aryan_gonsalves@yahoo.com
 - Gmail IMAP: aryan.gonsalves123@gmail.com (app password set)
