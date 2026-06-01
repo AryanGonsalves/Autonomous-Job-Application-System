@@ -1,5 +1,13 @@
 # Job Apply Bot — Full Handoff Context for New Conversation
 
+## ✅ Fixes applied 2026-06-01 (compiled + pushed)
+
+- **Retryable requeue-loop cap.** `scheduler.ts` records `[attempt:N]` in `jobs.notes` (preserved across retry-failed) and after **MAX_RETRYABLE_ATTEMPTS = 4** marks a retryable failure `failed` instead of `skipped`. `routes/jobs.ts` `retry-failed` resets all `skipped` but keeps `failed` jobs with `[attempt:N] ≥ 4`. This stops DriveWealth/ALO (JOB_TIMEOUT) and "Easy Apply not found" jobs from cycling back to `queued` every run and draining the daily limit.
+- **Greenhouse Affirm "submit button not found".** The 15s lazy-render submit-button poll now also covers `job-boards.greenhouse.io` (previously only `boards.greenhouse.io`). Should fix Affirm-type boards if the button was simply mounting after the old 3s fast-fail window.
+- **Indeed** left `enableIndeed=true` (user's explicit choice). Still wastes ~3min/run until a manual Indeed login creates `sessions/indeed_session.json`. Recommended follow-ups (NOT yet applied): session-file pre-check in `scrapers/indeed.ts` to skip fast; make "job no longer available" retryable.
+
+---
+
 ## ⚠️ Session 2026-05-31 — Findings & Fixes (READ FIRST)
 
 - **248 applications all-time; 425 queued.** Server verified healthy on :3000 with all fixes compiled into `dist`.

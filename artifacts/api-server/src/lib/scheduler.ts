@@ -375,21 +375,34 @@ export async function runPipeline(triggeredBy: "scheduled" | "manual" = "manual"
                 errMsg.includes("IMAP connect timeout") ||
                 errMsg.includes("net::ERR_") ||
                 errMsg.includes("Timeout");
+              // Cap retryable requeue loops. Jobs like DriveWealth/ALO (JOB_TIMEOUT
+              // on 20+ step forms) or "Easy Apply button not found" otherwise cycle
+              // back to queued forever and burn the daily budget every run. Track the
+              // attempt count in notes ([attempt:N], preserved across retry-failed)
+              // and after MAX_RETRYABLE_ATTEMPTS fail hard so they stop cycling.
+              const MAX_RETRYABLE_ATTEMPTS = 4;
+              const prevAttempts = (() => {
+                const m = (job.notes ?? "").match(/\[attempt:(\d+)\]/);
+                return m ? parseInt(m[1], 10) : 0;
+              })();
+              const attempt = prevAttempts + 1;
+              const exhausted = isRetryable && attempt >= MAX_RETRYABLE_ATTEMPTS;
+              const finalStatus = isRetryable && !exhausted ? "skipped" : "failed";
               await db
                 .update(jobsTable)
-                .set({ status: isRetryable ? "skipped" : "failed", notes: errMsg.slice(0, 500) })
+                .set({ status: finalStatus, notes: `[attempt:${attempt}] ${errMsg}`.slice(0, 500) })
                 .where(eq(jobsTable.id, job.id));
-              if (isRetryable) {
+              if (finalStatus === "skipped") {
                 await addLog(
                   "warn",
-                  `Skipped (retryable) job ${job.id} (${job.jobTitle} @ ${job.company}): ${errMsg}`,
+                  `Skipped (retryable, attempt ${attempt}/${MAX_RETRYABLE_ATTEMPTS}) job ${job.id} (${job.jobTitle} @ ${job.company}): ${errMsg}`,
                   job.platform
                 );
               } else {
                 jobsFailed++;
                 await addLog(
                   "error",
-                  `Application failed for job ${job.id} (${job.jobTitle} @ ${job.company}): ${errMsg}`,
+                  `${exhausted ? `Exhausted ${MAX_RETRYABLE_ATTEMPTS} retryable attempts — failing` : "Application failed"} for job ${job.id} (${job.jobTitle} @ ${job.company}): ${errMsg}`,
                   job.platform
                 );
               }

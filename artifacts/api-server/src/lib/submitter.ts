@@ -1207,7 +1207,11 @@ async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
     // instead of burning 15s each (100+ queued jobs × 15s was stalling the pipeline).
     let submitPollMs = 3000;
     try {
-      if (new URL(applyUrl).hostname === "boards.greenhouse.io") submitPollMs = 15000;
+      const ghHost = new URL(applyUrl).hostname;
+      // Both the classic (boards.greenhouse.io) and newer (job-boards.greenhouse.io)
+      // React boards lazy-render the submit button; Affirm-type boards were hitting
+      // the 3s fast-fail path before the button mounted → "submit button not found".
+      if (ghHost === "boards.greenhouse.io" || ghHost === "job-boards.greenhouse.io") submitPollMs = 15000;
     } catch { /* keep fast 3s default on URL parse failure */ }
     const submitDeadline = Date.now() + submitPollMs;
     while (Date.now() < submitDeadline) {

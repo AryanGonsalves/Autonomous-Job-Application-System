@@ -132,18 +132,38 @@ router.get("/jobs/:id/preview", async (req, res): Promise<void> => {
   });
 });
 
-// Reset all failed/skipped jobs back to queued so they can be retried
+// Reset failed/skipped jobs back to queued so they can be retried — EXCEPT jobs
+// that have exhausted their retryable-attempt budget (notes [attempt:N], N>=MAX),
+// which would otherwise keep cycling and burning the daily limit every run.
 router.post("/jobs/retry-failed", async (_req, res): Promise<void> => {
   try {
-    await db
-      .update(jobsTable)
-      .set({ status: "queued" })
-      .where(eq(jobsTable.status, "failed"));
+    const MAX_RETRYABLE_ATTEMPTS = 4;
+    // skipped → queued (always; these are still within their attempt budget)
     await db
       .update(jobsTable)
       .set({ status: "queued" })
       .where(eq(jobsTable.status, "skipped"));
-    res.json({ ok: true, message: "Failed and skipped jobs reset to queued" });
+    // failed → queued, but keep exhausted jobs as failed
+    const failed = await db
+      .select({ id: jobsTable.id, notes: jobsTable.notes })
+      .from(jobsTable)
+      .where(eq(jobsTable.status, "failed"));
+    let reset = 0;
+    let kept = 0;
+    for (const j of failed) {
+      const m = (j.notes ?? "").match(/\[attempt:(\d+)\]/);
+      const attempts = m ? parseInt(m[1], 10) : 0;
+      if (attempts >= MAX_RETRYABLE_ATTEMPTS) {
+        kept++;
+        continue;
+      }
+      await db.update(jobsTable).set({ status: "queued" }).where(eq(jobsTable.id, j.id));
+      reset++;
+    }
+    res.json({
+      ok: true,
+      message: `Reset skipped + ${reset} failed jobs to queued; kept ${kept} exhausted (>=${MAX_RETRYABLE_ATTEMPTS} attempts) as failed`,
+    });
   } catch (err) {
     console.error("retry-failed route error:", err);
     res.status(500).json({ ok: false, message: String(err) });
