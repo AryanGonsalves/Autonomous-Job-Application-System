@@ -13,9 +13,21 @@ async function isLoggedIn(page: Page): Promise<boolean> {
     await page.goto("https://www.indeed.com/", { waitUntil: "domcontentloaded", timeout: 20000 });
     const url = page.url();
     if (url.includes("/login") || url.includes("/auth") || url.includes("/account/login")) return false;
-    // Check for the presence of the user menu / profile icon which only appears when logged in
-    const loggedInIndicator = await page.$('[data-testid="header-user-menu-trigger"], [aria-label="Profile"], #indeed-ia-header-user-avatar').catch(() => null);
-    return loggedInIndicator !== null;
+    // Positive indicator: an account/profile menu only present when signed in.
+    const loggedInIndicator = await page
+      .$('[data-testid="header-user-menu-trigger"], [aria-label="Profile"], #indeed-ia-header-user-avatar, [data-testid="gnav-AccountMenu"]')
+      .catch(() => null);
+    if (loggedInIndicator) return true;
+    // Negative indicator: a visible top-level "Sign in" link means logged out.
+    const signInLink = await page
+      .$('a[href*="/account/login"], a[data-gnav-element-name="SignIn"]')
+      .catch(() => null);
+    if (signInLink) return false;
+    // Indeed frequently changes its header DOM, so the profile-icon selectors above
+    // false-negative even with a valid session. If we were NOT redirected to login
+    // and there's no visible Sign-in CTA, treat the saved session as valid rather
+    // than triggering a blocking interactive login during an automated run.
+    return true;
   } catch {
     return false;
   }
@@ -217,14 +229,18 @@ export async function scrapeIndeed(
   try {
     const loggedIn = await isLoggedIn(page);
     if (!loggedIn) {
-      // Close the headless context before opening the headed one
+      // Do NOT open a blocking headed login window during an automated run — that
+      // hangs the whole pipeline for ~3 minutes every run. The Indeed session is
+      // created out-of-band via POST /api/auth/indeed (dashboard → Settings → Indeed
+      // login). When there's no valid session, skip Indeed cleanly this run.
+      await addLog(
+        "warn",
+        "Indeed: no valid session (sessions/indeed_session.json missing or expired) — skipping this run. Use Settings → Indeed login to (re)authenticate.",
+        "indeed"
+      );
       await page.close();
       await ctx.close();
-      await loginManual(settings.indeedEmail);
-      // Re-open headless context with the newly saved session
-      const freshCtx = await getContextWithSession(SESSION_FILE);
-      const freshPage = await freshCtx.newPage();
-      return await _scrapeWithPage(freshPage, freshCtx, settings);
+      return { scraped: 0, filteredNonUs: 0 };
     } else {
       await addLog("info", "Indeed: using saved session", "indeed");
     }

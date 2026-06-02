@@ -1,5 +1,14 @@
 # Job Apply Bot — Full Handoff Context for New Conversation
 
+## ✅ Fixes applied 2026-06-02 (Indeed scraper — deploy-blocker)
+
+- **Indeed scraper no longer hangs automated runs.** `scrapers/indeed.ts` used fragile profile-icon selectors in `isLoggedIn()`; when Indeed changed its header DOM it false-negatived even with a valid `indeed_session.json`, so the scraper opened a **headed manual-login window and blocked ~3 min every run**. Fix: `isLoggedIn` is now lenient (logged-in unless redirected to /login or a visible "Sign in" link), and the automated path **never launches an interactive login** — with no valid session it warns and skips Indeed (`{scraped:0}`). Login stays an explicit action: `POST /api/auth/indeed` (Settings → Indeed login).
+- `GET /api/jobs` already returns `notes` (full row) → attempt-cap `[attempt:N]` and failure reasons are inspectable.
+- Remaining items are data/inherent, not code bugs: expand Lever slug list; prune custom-ATS redirect companies (Carta, Risk Ops) from `greenhouse_companies.json`; LinkedIn ATS-overlay failures are a third-party limitation.
+
+---
+
+
 ## ✅ Fixes applied 2026-06-01 (compiled + pushed)
 
 - **Retryable requeue-loop cap.** `scheduler.ts` records `[attempt:N]` in `jobs.notes` (preserved across retry-failed) and after **MAX_RETRYABLE_ATTEMPTS = 4** marks a retryable failure `failed` instead of `skipped`. `routes/jobs.ts` `retry-failed` resets all `skipped` but keeps `failed` jobs with `[attempt:N] ≥ 4`. This stops DriveWealth/ALO (JOB_TIMEOUT) and "Easy Apply not found" jobs from cycling back to `queued` every run and draining the daily limit.
