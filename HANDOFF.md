@@ -1,5 +1,25 @@
 # Job Apply Bot — Full Handoff Context for New Conversation
 
+## ✅ Answer-quality fix 2026-06-02 + Cloud plan
+
+- **Root-cause fix for wrong screening answers.** `aiClient.inferFromResume` had a hardcoded
+  `require sponsorship → "No" (0.9)` which is WRONG for an F-1/STEM-OPT applicant (will need
+  future H-1B sponsorship) — it kept regenerating bad answers (e.g. bank id 275). Replaced with
+  an authoritative **profile-facts layer**: sponsorship/visa → "Yes"; authorized-to-work-now →
+  "Yes"; authorized-WITHOUT-sponsorship → "No (will need future sponsorship)"; US citizen / green
+  card / permanent resident → "No"; security clearance → "No"; 18+ → "Yes"; felony/criminal → "No";
+  background check/drug screen → "Yes"; **EEO self-id (gender/race/ethnicity/veteran/disability) →
+  "I prefer not to disclose" (never fabricated)**; GPA → "3.8". Corrected the existing bad bank
+  entry (id 275) to "Yes" via the API. For the multi-user cloud version these constants must
+  become a per-user profile object (see CLOUD_DEPLOYMENT_PLAN.md).
+- **Cloud-deployable plan** added in `CLOUD_DEPLOYMENT_PLAN.md` (Docker, Postgres, S3 sessions,
+  secrets manager, queue/cron, per-user profile, auth; headed-login + ToS caveats).
+- Follow-ups still open (#3 store coerced numeric answers in the bank; #4 bank consistency
+  checker; bank dedup of ~296 near-duplicate entries).
+
+---
+
+
 ## ✅ Fixes applied 2026-06-02 (Indeed scraper — deploy-blocker)
 
 - **Indeed scraper no longer hangs automated runs.** `scrapers/indeed.ts` used fragile profile-icon selectors in `isLoggedIn()`; when Indeed changed its header DOM it false-negatived even with a valid `indeed_session.json`, so the scraper opened a **headed manual-login window and blocked ~3 min every run**. Fix: `isLoggedIn` is now lenient (logged-in unless redirected to /login or a visible "Sign in" link), and the automated path **never launches an interactive login** — with no valid session it warns and skips Indeed (`{scraped:0}`). Login stays an explicit action: `POST /api/auth/indeed` (Settings → Indeed login).

@@ -187,18 +187,65 @@ function inferFromResume(
   const q = question.toLowerCase();
   const resumeText = JSON.stringify(resume).toLowerCase();
 
-  // ── Work authorisation ─────────────────────────────────────────────────────
+  // ── Profile facts (authoritative) ──────────────────────────────────────────
+  // Aryan Gonsalves — F-1 student, currently work-authorized on OPT/STEM-OPT, but
+  // WILL require visa sponsorship (H-1B) in the future. These deterministic answers
+  // stop the AI from guessing on high-stakes legal/EEO questions (the AI previously
+  // answered "No" to future-sponsorship, which is incorrect and risky).
+  // NOTE: for the multi-user cloud version, replace these constants with a per-user
+  // profile object loaded from settings/DB.
+
+  // Authorized to work NOW (on OPT) — but NOT "without sponsorship".
   if (
-    q.includes("authorized to work") ||
-    q.includes("authorised to work") ||
-    q.includes("legally authorized") ||
-    q.includes("eligible to work in the us") ||
-    q.includes("work in the united states")
+    (q.includes("authorized to work") || q.includes("authorised to work") ||
+      q.includes("legally authorized") || q.includes("legally allowed to work") ||
+      q.includes("eligible to work") || q.includes("work in the united states")) &&
+    !q.includes("without") && !q.includes("sponsorship")
   ) {
+    return { answer: "Yes", confidence: 0.97 };
+  }
+  // "Authorized to work WITHOUT sponsorship / restriction" → No (needs future sponsorship).
+  if (
+    (q.includes("authorized to work") || q.includes("authorised to work") || q.includes("work in the u")) &&
+    (q.includes("without sponsorship") || q.includes("without restriction") ||
+      q.includes("without requiring") || q.includes("without need") || q.includes("on an ongoing basis"))
+  ) {
+    return { answer: "No. Authorized now on F-1 OPT, but will require visa sponsorship in the future.", confidence: 0.95 };
+  }
+  // Any sponsorship / visa question (now or in the future) → Yes.
+  if (q.includes("sponsor") || q.includes("visa") || q.includes("work permit")) {
     return { answer: "Yes", confidence: 0.95 };
   }
-  if (q.includes("require sponsorship") || q.includes("need visa sponsorship") || q.includes("require work visa")) {
+  // US citizen / permanent resident / green card → No (international student).
+  if (
+    q.includes("u.s. citizen") || q.includes("us citizen") || q.includes("u.s citizen") ||
+    q.includes("citizen of the united states") || q.includes("permanent resident") || q.includes("green card")
+  ) {
+    return { answer: "No", confidence: 0.95 };
+  }
+  // Security clearance → No.
+  if (q.includes("security clearance") || q.includes("clearance level") || q.includes("active clearance")) {
     return { answer: "No", confidence: 0.9 };
+  }
+  // Age 18+ → Yes.
+  if (q.includes("at least 18") || q.includes("18 years") || q.includes("over 18") || q.includes("of legal working age")) {
+    return { answer: "Yes", confidence: 0.97 };
+  }
+  // Felony / criminal background → No.
+  if (q.includes("felony") || q.includes("convicted") || q.includes("criminal record") || q.includes("criminal history")) {
+    return { answer: "No", confidence: 0.9 };
+  }
+  // Willing to complete a background check / drug screen → Yes.
+  if (q.includes("background check") || q.includes("drug screen") || q.includes("drug test")) {
+    return { answer: "Yes", confidence: 0.9 };
+  }
+  // EEO / voluntary self-identification → decline, NEVER fabricate.
+  if (/\b(gender|race|ethnicity|hispanic or latino|are you hispanic|veteran status|protected veteran|self-identif|self identif|disability status|do you have a disability)\b/.test(q)) {
+    return { answer: "I prefer not to disclose", confidence: 0.9 };
+  }
+  // GPA.
+  if (q.includes("gpa") || q.includes("grade point")) {
+    return { answer: "3.8", confidence: 0.95 };
   }
 
   // ── Degree / education ─────────────────────────────────────────────────────
