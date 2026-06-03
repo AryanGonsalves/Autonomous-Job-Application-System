@@ -422,16 +422,41 @@ export async function generateAtsAnswer(
     return (lastSpace > limit * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd();
   }
 
+  // Coerce numeric-style questions (years / salary / notice / 1-10 rating) to a bare
+  // number so the bank stores clean values that pass "enter a number" validation.
+  // (#3) Applied at every return path below.
+  function coerceNumeric(ans: string): string {
+    const ql = question.toLowerCase();
+    const numeric =
+      ql.includes("how many year") ||
+      ql.startsWith("number of years") || ql.startsWith("# of years") ||
+      ql.includes("years of experience do you have") ||
+      ql.includes("salary") || ql.includes("compensation") || ql.includes("ctc") ||
+      ql.includes("notice period") || ql.includes("what is your notice") ||
+      /on a scale of 1\s*[-to ]+\s*10/.test(ql) ||
+      /rate (your|yourself)[^?]*\b(10|ten)\b/.test(ql);
+    if (!numeric) return ans;
+    if (ql.includes("current") && (ql.includes("salary") || ql.includes("ctc"))) return "0";
+    if ((ql.includes("expected") || ql.includes("desired")) && (ql.includes("salary") || ql.includes("compensation"))) return "85000";
+    if (ql.includes("notice")) return "0";
+    const m = ans.match(/\b(\d+)\b/);
+    if (m) return m[1] ?? "1";
+    if (/less than|under|no experience|none/i.test(ans)) return "0";
+    return "1";
+  }
+
   // 1. Check question bank for a saved user-verified answer
   const saved = await lookupSavedAnswer(question);
   if (saved !== null) {
-    return maxChars ? truncateToLimit(saved, maxChars) : saved;
+    const out = coerceNumeric(saved);
+    return maxChars ? truncateToLimit(out, maxChars) : out;
   }
 
   // 2. Try resume inference for common question types
   const inferred = inferFromResume(question, resume);
   if (inferred && inferred.confidence >= 0.8) {
-    const answer = maxChars ? truncateToLimit(inferred.answer, maxChars) : inferred.answer;
+    const coerced = coerceNumeric(inferred.answer);
+    const answer = maxChars ? truncateToLimit(coerced, maxChars) : coerced;
     await saveToQuestionBank({
       question,
       answer,
@@ -480,6 +505,9 @@ Be honest and specific to the candidate's actual background.`,
   });
 
   let answer = response.choices[0]?.message?.content?.trim() ?? "Yes";
+
+  // (#3) Coerce numeric questions to a bare number before saving/returning.
+  answer = coerceNumeric(answer);
 
   // Hard-truncate as safety net even if AI tried to comply
   if (maxChars) answer = truncateToLimit(answer, maxChars);

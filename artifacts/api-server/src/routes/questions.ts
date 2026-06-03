@@ -105,4 +105,62 @@ router.put("/questions/:id", async (req, res): Promise<void> => {
   res.json({ ok: true, question: updated });
 });
 
+// ── (#4) Consistency checker + dedup ─────────────────────────────────────────
+
+type QRow = typeof questionsBankTable.$inferSelect;
+const SOURCE_RANK: Record<string, number> = { user: 4, resume: 3, saved: 2, ai: 1 };
+function rowScore(q: QRow): number {
+  return (SOURCE_RANK[q.source ?? "ai"] ?? 0) * 10 + (q.confidence ?? 0);
+}
+function groupByNorm(all: QRow[]): Map<string, QRow[]> {
+  const groups = new Map<string, QRow[]>();
+  for (const q of all) {
+    const k = (q.questionNorm || q.question || "").trim().toLowerCase();
+    if (!k) continue;
+    const list = groups.get(k);
+    if (list) list.push(q);
+    else groups.set(k, [q]);
+  }
+  return groups;
+}
+
+// GET /questions/issues — surface contradictions: same normalized question, different answers.
+router.get("/questions/issues", async (_req, res): Promise<void> => {
+  const all = await db.select().from(questionsBankTable);
+  const conflicts: Array<{ question: string; count: number; variants: Array<{ id: number; answer: string; source: string | null; confidence: number | null }> }> = [];
+  for (const rows of groupByNorm(all).values()) {
+    const distinct = new Set(rows.map((r) => (r.answer ?? "").trim().toLowerCase()).filter(Boolean));
+    if (rows.length > 1 && distinct.size > 1) {
+      conflicts.push({
+        question: (rows[0]?.question ?? "").slice(0, 140),
+        count: rows.length,
+        variants: rows.map((r) => ({ id: r.id, answer: (r.answer ?? "").slice(0, 90), source: r.source, confidence: r.confidence })),
+      });
+    }
+  }
+  res.json({ conflictGroups: conflicts.length, conflicts: conflicts.slice(0, 100) });
+});
+
+// POST /questions/dedup — collapse duplicate normalized questions, keeping the best answer
+// (prefers answered rows, then user > resume > saved > ai, then highest confidence).
+router.post("/questions/dedup", async (_req, res): Promise<void> => {
+  const all = await db.select().from(questionsBankTable);
+  let removed = 0;
+  let kept = 0;
+  for (const rows of groupByNorm(all).values()) {
+    if (rows.length <= 1) { kept += rows.length; continue; }
+    const sorted = [...rows].sort((a, b) => {
+      const answered = Number(!!b.answer) - Number(!!a.answer);
+      if (answered !== 0) return answered;
+      return rowScore(b) - rowScore(a);
+    });
+    kept++;
+    for (const r of sorted.slice(1)) {
+      await db.delete(questionsBankTable).where(eq(questionsBankTable.id, r.id));
+      removed++;
+    }
+  }
+  res.json({ ok: true, removed, kept });
+});
+
 export default router;

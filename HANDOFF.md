@@ -14,8 +14,15 @@
   become a per-user profile object (see CLOUD_DEPLOYMENT_PLAN.md).
 - **Cloud-deployable plan** added in `CLOUD_DEPLOYMENT_PLAN.md` (Docker, Postgres, S3 sessions,
   secrets manager, queue/cron, per-user profile, auth; headed-login + ToS caveats).
-- Follow-ups still open (#3 store coerced numeric answers in the bank; #4 bank consistency
-  checker; bank dedup of ~296 near-duplicate entries).
+- **#3 (done): numeric answers stored as clean numbers.** `generateAtsAnswer` now coerces
+  years/salary/notice/1-10-rating questions to a bare number at every return path (saved /
+  resume / AI), so the bank no longer stores prose like "approximately 0 years" for numeric
+  fields. (Yes/No radios are unaffected — those go through `generateYesNoAnswer`.)
+- **#4 (done): bank consistency checker + dedup endpoints.** `GET /api/questions/issues`
+  returns contradiction groups (same normalized question, different answers — e.g. the old
+  275-vs-244 sponsorship clash). `POST /api/questions/dedup` collapses duplicate normalized
+  questions, keeping the best row (answered first, then user > resume > saved > ai, then
+  highest confidence). Run dedup once after deploy to shrink the ~296-entry bank.
 
 ---
 
