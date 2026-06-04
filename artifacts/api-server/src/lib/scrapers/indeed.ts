@@ -84,11 +84,12 @@ async function loginManual(email: string | null): Promise<void> {
 
 async function scrapeJobsForKeyword(
   page: Page,
-  keyword: string
+  keyword: string,
+  searchLocation: string
 ): Promise<Array<{ url: string; title: string; company: string; location: string; description: string }>> {
   const searchUrl =
     `https://www.indeed.com/jobs?q=${encodeURIComponent(keyword)}` +
-    `&l=United+States&fromage=1&remotejobs=1&sort=date`;
+    `&l=${encodeURIComponent(searchLocation)}&fromage=1&sort=date`;
 
   await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
   await page.waitForTimeout(1500 + Math.random() * 1000);
@@ -262,10 +263,18 @@ async function _scrapeWithPage(
   let scraped = 0;
   let filteredNonUs = 0;
 
+  // locationPreference is the user-set search scope: a city, "City, ST", a state, or a
+  // nationwide value ("United States" / "USA" / "Anywhere" / "Remote"). Map broad values
+  // to "United States" (nationwide); otherwise search that exact location on Indeed.
+  const rawLoc = (settings.locationPreference || "").trim();
+  const broadLoc = /^(usa|us|u\.s\.|u\.s\.a\.|united states.*|anywhere|nationwide|national|remote|all.*usa|everywhere|any|all)$/i.test(rawLoc);
+  const searchLocation = !rawLoc || broadLoc ? "United States" : rawLoc;
+  await addLog("info", `Indeed: search location = "${searchLocation}"`, "indeed");
+
   try {
     for (const keyword of settings.keywords) {
       await addLog("info", `Indeed: scraping keyword "${keyword}"`, "indeed");
-      const jobs = await scrapeJobsForKeyword(page, keyword);
+      const jobs = await scrapeJobsForKeyword(page, keyword, searchLocation);
 
       for (const job of jobs) {
         if (isTitleAvoided(job.title, settings.avoidKeywords)) {

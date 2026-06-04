@@ -56,6 +56,31 @@ function extractYearsNumber(answer: string): string {
   return "1"; // Safe fallback
 }
 
+/**
+ * locationPreference is a FREE-FORM, user-set value. It may be a city ("Phoenix" or
+ * "Phoenix, AZ"), a state ("Arizona" / "TX"), or a nationwide/broad value
+ * ("United States" / "USA" / "Anywhere" / "Nationwide" / "Remote"). Application forms ask
+ * for the APPLICANT's own city/state, so we only ever type a concrete city into those
+ * fields — for broad/state-only values we return nulls so the caller leaves the form's
+ * pre-filled value intact instead of typing "USA" into a city autocomplete.
+ */
+export function parseLocationPreference(
+  loc: string | null | undefined
+): { city: string | null; state: string | null; nationwide: boolean } {
+  const raw = (loc ?? "").trim();
+  const lower = raw.toLowerCase();
+  const broad = new Set([
+    "", "usa", "us", "u.s.", "u.s.a.", "united states", "united states of america",
+    "anywhere", "nationwide", "national", "remote", "all of usa", "entire usa",
+    "entirety of usa", "everywhere", "any", "all",
+  ]);
+  if (broad.has(lower)) return { city: null, state: null, nationwide: true };
+  const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  if (parts.length >= 2) return { city: parts[0] || null, state: parts[1] || null, nationwide: false };
+  if (/^[a-z]{2}$/i.test(raw)) return { city: null, state: raw.toUpperCase(), nationwide: false }; // state code only
+  return { city: raw, state: null, nationwide: false }; // single token → treat as a city
+}
+
 async function fillScreeningQuestions(
   page: Page,
   job: Job,
@@ -110,32 +135,33 @@ async function fillScreeningQuestions(
               if (!cur || !/^\d+$/.test(cur)) await ti.fill(digits).catch(() => {});
             }
           } else if (qLower === "city" || qLower.includes("location (city)")) {
-            // City: use locationPreference setting, then select from typeahead dropdown
-            const locPref = (await getSetting("locationPreference")) || "Phoenix";
-            const city = locPref.split(",")[0].trim();
-            // Always clear + refill to trigger typeahead (even if value already present, it may be unselected)
-            await ti.fill("").catch(() => {});
-            await ti.fill(city).catch(() => {});
-            await page.waitForTimeout(1500);
-            // Select from typeahead dropdown (floating overlay — query page-level, not container)
-            const firstOpt = page.locator(
-              '[role="option"], [role="listitem"] a, .artdeco-typeahead__option, li[id*="typeahead"], li[id*="option"]'
-            ).first();
-            if (await firstOpt.isVisible().catch(() => false)) {
-              await firstOpt.click().catch(() => {});
-              await page.waitForTimeout(400);
-            } else {
-              await page.keyboard.press("ArrowDown").catch(() => {});
-              await page.waitForTimeout(400);
-              await page.keyboard.press("Enter").catch(() => {});
-              await page.waitForTimeout(300);
+            // City asks where the APPLICANT lives. Only type a concrete city; for broad
+            // (USA/Remote) or state-only locationPreference values, leave the form's
+            // pre-filled city as-is instead of breaking the autocomplete.
+            const { city: prefCity } = parseLocationPreference(await getSetting("locationPreference"));
+            if (prefCity) {
+              await ti.fill("").catch(() => {});
+              await ti.fill(prefCity).catch(() => {});
+              await page.waitForTimeout(1500);
+              // Select from typeahead dropdown (floating overlay — query page-level, not container)
+              const firstOpt = page.locator(
+                '[role="option"], [role="listitem"] a, .artdeco-typeahead__option, li[id*="typeahead"], li[id*="option"]'
+              ).first();
+              if (await firstOpt.isVisible().catch(() => false)) {
+                await firstOpt.click().catch(() => {});
+                await page.waitForTimeout(400);
+              } else {
+                await page.keyboard.press("ArrowDown").catch(() => {});
+                await page.waitForTimeout(400);
+                await page.keyboard.press("Enter").catch(() => {});
+                await page.waitForTimeout(300);
+              }
             }
           } else if (qLower === "state" || qLower === "state or province" || qLower === "province") {
-            // State: extract from locationPreference (e.g. "Phoenix, AZ" → "AZ")
-            const locPref = (await getSetting("locationPreference")) || "Phoenix, AZ";
-            const parts = locPref.split(",");
-            const state = parts.length > 1 ? parts[1].trim() : "AZ";
-            if (!cur) await ti.fill(state).catch(() => {});
+            // State: fill only if derivable from locationPreference (e.g. "Phoenix, AZ" → "AZ"
+            // or "TX"). For broad/city-only values, leave the field as-is.
+            const { state } = parseLocationPreference(await getSetting("locationPreference"));
+            if (state && !cur) await ti.fill(state).catch(() => {});
           } else if (qLower === "zip code" || qLower === "zip" || qLower === "postal code") {
             // Zip: use contactZip setting if available
             const zip = await getSetting("contactZip");
@@ -638,14 +664,17 @@ async function submitLinkedIn(job: Job, resume: ParsedResume): Promise<void> {
 
       // City / location typeahead (required field on LinkedIn contact-info step, often causes
       // validation block that prevents Next from advancing the form)
-      const locationPref = (await getSetting("locationPreference").catch(() => null)) ?? "Los Angeles";
+      const { city: prefCity, state: prefState } = parseLocationPreference(
+        await getSetting("locationPreference").catch(() => null)
+      );
+      const locationFill = prefCity ? (prefState ? `${prefCity}, ${prefState}` : prefCity) : null;
       const cityLoc = page.locator(
         'input[aria-label*="City" i], input[aria-label*="Location" i], input[placeholder*="City, state" i], input[placeholder*="city" i]'
       ).first();
-      if (await cityLoc.count() > 0) {
+      if (locationFill && (await cityLoc.count()) > 0) {
         const existingCity = await cityLoc.inputValue().catch(() => "");
         if (!existingCity.trim()) {
-          await cityLoc.fill(locationPref).catch(() => {});
+          await cityLoc.fill(locationFill).catch(() => {});
           await page.waitForTimeout(1500); // Wait longer for Greenhouse/third-party typeaheads
           // Select first typeahead suggestion — try multiple selectors used by different ATS systems
           const firstOption = page.locator(

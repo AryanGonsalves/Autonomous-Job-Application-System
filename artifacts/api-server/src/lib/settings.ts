@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 const DEFAULTS: Record<string, string> = {
   keywords: JSON.stringify(["data analyst", "data scientist", "business analyst", "analytics engineer"]),
   avoidKeywords: JSON.stringify(["senior", "lead", "principal", "staff", "director", "manager", "head of", "vp", "vice president"]),
-  locationPreference: "Remote",
+  locationPreference: "United States",
   dailyLimit: "100",
   contactEmail: "",
   contactPhone: "",

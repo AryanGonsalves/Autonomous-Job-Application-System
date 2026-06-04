@@ -1,5 +1,22 @@
 # Job Apply Bot — Full Handoff Context for New Conversation
 
+## ✅ Location preference is now free-form (2026-06-03)
+
+`locationPreference` is a **user-set** value (edit in Settings / `PUT /api/settings`) that can be
+any **city** ("Phoenix, AZ"), **state** ("Arizona" / "TX"), or **nationwide** ("United States" /
+"USA" / "Anywhere" / "Nationwide" / "Remote"). Nothing is hardcoded. Implementation:
+- New `parseLocationPreference()` in `submitter.ts` classifies the value into `{city, state,
+  nationwide}`. Application **city/state fields** (which ask where the APPLICANT lives) only get a
+  concrete city typed in; for broad/state-only values the form's pre-filled value is left intact
+  (no more typing "USA" into a city autocomplete). Fixed all three fill sites.
+- **Indeed search scope** now uses `locationPreference`: broad values → nationwide ("United
+  States"); a city/state → that exact `&l=` location. Logs `Indeed: search location = "..."`.
+- Default `locationPreference` changed to "United States" (nationwide) for fresh installs.
+- (LinkedIn search geography still uses its hardcoded US geoId — wire `&location=` later if needed.)
+
+---
+
+
 ## ✅ Answer-quality fix 2026-06-02 + Cloud plan
 
 - **Root-cause fix for wrong screening answers.** `aiClient.inferFromResume` had a hardcoded
