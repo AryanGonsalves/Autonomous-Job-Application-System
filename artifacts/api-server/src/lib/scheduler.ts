@@ -390,7 +390,7 @@ export async function runPipeline(triggeredBy: "scheduled" | "manual" = "manual"
               const finalStatus = isRetryable && !exhausted ? "skipped" : "failed";
               await db
                 .update(jobsTable)
-                .set({ status: finalStatus, notes: `[attempt:${attempt}] ${errMsg}`.slice(0, 500) })
+                .set({ status: finalStatus, notes: `[attempt:${attempt}] ${errMsg || "unknown error (no message captured)"}`.slice(0, 500) })
                 .where(eq(jobsTable.id, job.id));
               if (finalStatus === "skipped") {
                 await addLog(

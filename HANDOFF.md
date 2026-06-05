@@ -1,5 +1,28 @@
 # Job Apply Bot — Full Handoff Context for New Conversation
 
+## ✅ Greenhouse monoculture fix (2026-06-04)
+
+Diagnosis (verified by opening the boards directly in Chrome): Greenhouse applications were
+~all Pinterest (14) + Peloton (2); 148 other jobs (Anthropic, Stripe, Roblox, SoFi, Affirm,
+Lyft, Klaviyo, Databricks…) sat "skipped" with NO note. Two causes:
+1. **Wrong apply URL.** The scraper stored `absolute_url`, which for some companies is their
+   OWN careers site (stripe.com/jobs, careers.roblox.com) — no Greenhouse form to submit.
+2. **Complex forms.** Real boards (Affirm/Anthropic on job-boards.greenhouse.io) DO have a
+   working "Submit application" button + form (Affirm = 32 fields) but many required
+   fields aren't fully completed → validation blocks submit.
+
+Fixes applied:
+- `greenhouse.ts`: when `absolute_url` is not a `*.greenhouse.io` domain, store the canonical
+  hosted form `https://job-boards.greenhouse.io/{slug}/jobs/{id}` instead — so we never queue
+  an unsubmittable company-site URL. (Next scrape inserts corrected records; old custom-URL
+  rows stay skipped, harmless.)
+- `scheduler.ts`: skip/fail notes can never be blank now (`unknown error (no message
+  captured)` fallback) — fixes the "(no note)" blind spot so failures are always diagnosable.
+- STILL TODO (#3): harden the multi-field Affirm/Anthropic form fill (required custom fields).
+
+---
+
+
 ## ✅ Location preference is now free-form (2026-06-03)
 
 `locationPreference` is a **user-set** value (edit in Settings / `PUT /api/settings`) that can be

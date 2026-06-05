@@ -97,8 +97,21 @@ export async function scrapeGreenhouseJobs(keywords: string[], avoidKeywords: st
         const isUs = isUsLocation(location);
         const status = isUs ? "queued" : "filtered_non_us";
 
-        // Use absolute_url — the company's own careers page
-        const applyUrl = job.absolute_url ?? `https://boards.greenhouse.io/${company.slug}/jobs/${job.id}`;
+        // Always target a REAL Greenhouse application form. Some companies (Stripe,
+        // Roblox, ...) set absolute_url to their OWN careers site (e.g. stripe.com,
+        // careers.roblox.com), which has no Greenhouse form the bot can fill/submit —
+        // that's why those companies pile up as no-op "skipped" jobs. When the URL is not
+        // a greenhouse.io domain, fall back to the canonical hosted form so we never queue
+        // an unsubmittable company-site URL.
+        let applyUrl: string;
+        try {
+          const host = new URL(job.absolute_url ?? "").hostname;
+          applyUrl = host.endsWith("greenhouse.io")
+            ? job.absolute_url
+            : `https://job-boards.greenhouse.io/${company.slug}/jobs/${job.id}`;
+        } catch {
+          applyUrl = `https://job-boards.greenhouse.io/${company.slug}/jobs/${job.id}`;
+        }
 
         try {
           await db.insert(jobsTable).values({
