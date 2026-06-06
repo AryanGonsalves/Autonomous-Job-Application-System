@@ -29,6 +29,18 @@
     { "slug": "samsara", "name": "Samsara" },
     { "slug": "wealthfront", "name": "Wealthfront" },
     { "slug": "momentive", "name": "Momentive (SurveyMonkey)" },
-    { "slug": "calm", "name": "Calm" }
+    { "slug": "calm", "name": "Calm" },
+    { "slug": "brave", "name": "Brave" },
+    { "slug": "kraken", "name": "Kraken" },
+    { "slug": "checkr", "name": "Checkr" },
+    { "slug": "podium", "name": "Podium" },
+    { "slug": "yext", "name": "Yext" },
+    { "slug": "ro", "name": "Ro" },
+    { "slug": "fanatics", "name": "Fanatics" },
+    { "slug": "gopuff", "name": "Gopuff" },
+    { "slug": "upgrade", "name": "Upgrade" },
+    { "slug": "huntress", "name": "Huntress" },
+    { "slug": "writer", "name": "Writer" },
+    { "slug": "instacart", "name": "Instacart" }
   ]
 }

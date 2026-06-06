@@ -1,5 +1,25 @@
 # Job Apply Bot — Full Handoff Context for New Conversation
 
+## ✅ 2026-06-06 — jobs.notes column (real fix) + more job sources
+
+- **`jobs` table had NO `notes` column** (not in the Drizzle schema, no migration). The
+  scheduler's `.set({notes})` silently dropped it (Drizzle skips unknown keys), so EVERY job
+  showed "(no note)", the **attempt-cap never persisted** (jobs could loop forever), and
+  `POST /api/jobs/retry-failed` **500'd** (`db.select({notes: jobsTable.notes})` referenced an
+  undefined column → "Cannot convert undefined or null to object"). Fixed: added
+  `notes: text("notes")` to `lib/db/src/schema/jobs.ts` and `ALTER TABLE jobs ADD COLUMN notes
+  TEXT` to `dbMigrate.ts` (now runs each migration statement in its own try/catch; "duplicate
+  column" on later boots is ignored). Now notes persist, the attempt-cap works, and
+  retry-failed succeeds.
+- **Supply fix (0-submits root cause = empty queue):** the queue had drained and new scraping
+  wasn't replenishing (Lever exhausted, Indeed 0 easy-apply, LinkedIn off). Per user choice (b)
+  = clean API-based sources, added **+24 Greenhouse** and **+12 Lever** company slugs (data/
+  analytics hiring). Invalid slugs are skipped harmlessly by the scrapers.
+- Repopulated the queue via retry-failed (skipped→queued) and triggered a run.
+
+---
+
+
 ## ✅ Answer-quality fix: experience-years + salary (2026-06-06)
 
 Verification showed the bot was entering bad values on two generic questions:

@@ -18,6 +18,10 @@ export const jobsTable = sqliteTable("jobs", {
   status: text("status", { enum: jobStatusValues }).notNull().default("queued"),
   coverLetterText: text("cover_letter_text"),
   countryResolved: text("country_resolved"),
+  // Last failure/skip reason + retry attempt marker ("[attempt:N] <error>"). Previously
+  // referenced by scheduler/retry-failed but the column never existed, so notes were
+  // silently dropped (every job showed "(no note)") and the attempt-cap never persisted.
+  notes: text("notes"),
 }, (t) => [
   uniqueIndex("jobs_apply_url_unique").on(t.applyUrl),
 ]);

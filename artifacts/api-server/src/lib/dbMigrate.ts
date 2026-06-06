@@ -32,15 +32,27 @@ const MIGRATIONS: string[] = [
   // Index for fast question lookups
   `CREATE INDEX IF NOT EXISTS idx_questions_norm ON questions_bank(question_norm)`,
   `CREATE INDEX IF NOT EXISTS idx_questions_review ON questions_bank(needs_review)`,
+  // jobs.notes — stores the last failure/skip reason + "[attempt:N]" retry marker.
+  // The column was referenced by the scheduler/retry-failed but never created, so notes
+  // were silently dropped. SQLite has no "ADD COLUMN IF NOT EXISTS", so this errors
+  // harmlessly ("duplicate column") once the column exists — runMigrations swallows that
+  // per-statement so the rest still run.
+  `ALTER TABLE jobs ADD COLUMN notes TEXT`,
 ];
 
 export async function runMigrations(): Promise<void> {
-  try {
-    for (const statement of MIGRATIONS) {
+  // Run each statement independently so one expected failure (e.g. an ALTER on an
+  // already-existing column) doesn't block the others.
+  for (const statement of MIGRATIONS) {
+    try {
       await db.run(sql.raw(statement));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // "duplicate column name" is expected on every boot after the first — ignore it.
+      if (!/duplicate column/i.test(msg)) {
+        logger.warn({ err, statement: statement.slice(0, 60) }, "DB migration statement skipped");
+      }
     }
-    logger.info("DB migrations applied");
-  } catch (err) {
-    logger.error({ err }, "DB migration error");
   }
+  logger.info("DB migrations applied");
 }
