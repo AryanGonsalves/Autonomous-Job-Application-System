@@ -1,5 +1,21 @@
 # Job Apply Bot — Full Handoff Context for New Conversation
 
+## ✅ Answer-quality fix: experience-years + salary (2026-06-06)
+
+Verification showed the bot was entering bad values on two generic questions:
+- "How many years of professional experience?" → AI said **"6"** (inflated/inaccurate for a
+  new-grad M.S. candidate — misrepresentation risk).
+- "Salary requirements?" → AI prose **"$25–30/hr"** (wrong format, inconsistent, low).
+Fix (`aiClient.inferFromResume`): generic "years of professional/work/total experience"
+(not tied to a specific skill) now returns **"2"** (realistic early-career); salary
+expect/desired/require/range → **"85000"** (annual), current salary → **"0"**. Skill-specific
+"years with X" still uses the skill logic. NOTE: existing bad entries already in the
+`questions_bank` are served first (tier 1), so they were also corrected via the API
+(years → "2", salary → "85000").
+
+---
+
+
 ## Run verification 2026-06-06
 
 **Scraping:** Greenhouse +8 new jobs (180 companies), Lever 0 new / 28 non-US filtered, Indeed 0 (session active, 0 easy-apply found), Handshake 0 (ASU SSO OK), LinkedIn disabled.

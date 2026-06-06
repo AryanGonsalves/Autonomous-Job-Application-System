@@ -248,6 +248,30 @@ function inferFromResume(
     return { answer: "3.8", confidence: 0.95 };
   }
 
+  // Salary expectation / requirement / desired (annual). The AI otherwise returns prose
+  // or an inconsistent hourly figure. Current salary → 0 (student/intern).
+  if (q.includes("current salary") || q.includes("current compensation") || (q.includes("current") && q.includes("ctc"))) {
+    return { answer: "0", confidence: 0.85 };
+  }
+  if (
+    (q.includes("salary") || q.includes("compensation") || q.includes("pay")) &&
+    (q.includes("expect") || q.includes("desired") || q.includes("require") || q.includes("range") || q.includes("looking for"))
+  ) {
+    return { answer: "85000", confidence: 0.85 };
+  }
+
+  // Generic "years of professional/work/total experience" (NOT tied to a specific skill).
+  // The AI hallucinates inflated numbers (e.g. "6") for a new-grad M.S. candidate; anchor it
+  // to a realistic early-career value. Skill-specific "years with X" still falls through to
+  // the skill logic below.
+  if (
+    /how many years.*(professional|work|industry|total|overall|relevant) experience/.test(q) ||
+    /\byears of (professional|work|industry|overall|total) experience\b/.test(q) ||
+    /total\s+(work\s+)?experience/.test(q)
+  ) {
+    return { answer: "2", confidence: 0.8 };
+  }
+
   // ── Degree / education ─────────────────────────────────────────────────────
   if (q.includes("bachelor") || q.includes("bs degree") || q.includes("undergraduate degree")) {
     const hasBachelor =
