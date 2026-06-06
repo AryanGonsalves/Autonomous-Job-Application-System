@@ -1,5 +1,22 @@
 # Job Apply Bot — Full Handoff Context for New Conversation
 
+## ✅ 2026-06-05 — Email verified + keep-alive watchdog
+
+- **Gmail + Yahoo both confirmed working.** Live email import: Gmail connected + fetched
+  138/147 inbox emails; Yahoo connected + fetched 696 inbox emails with NO "Connection not
+  available" error (the hardening holds); "Email import complete: … 2 confirmations matched".
+  Manual/bot Sent-folder separation active.
+- **Server kept dying while unattended** (console window closing / crashes) — the #1 reliability
+  gap. Added **`watchdog.bat`**: polls `http://localhost:3000/api/scheduler/status` every 45s and
+  runs `kill-and-restart.bat` only after **3 consecutive failures** (~2 min real downtime), so it
+  won't false-restart during heavy phases (email-sync briefly saturates the event loop). Leave it
+  running while away. (For the cloud build this becomes a real process supervisor / health probe.)
+- Note: the dashboard (:5173) is a separate Vite process — `start-all.bat` launches both API +
+  dashboard; the watchdog only keeps the API alive.
+
+---
+
+
 ## ✅ Greenhouse monoculture fix (2026-06-04)
 
 Diagnosis (verified by opening the boards directly in Chrome): Greenhouse applications were
