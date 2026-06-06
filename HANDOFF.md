@@ -8,7 +8,8 @@ Verification showed the bot was entering bad values on two generic questions:
 - "Salary requirements?" → AI prose **"$25–30/hr"** (wrong format, inconsistent, low).
 Fix (`aiClient.inferFromResume`): generic "years of professional/work/total experience"
 (not tied to a specific skill) now returns **"2"** (realistic early-career); salary
-expect/desired/require/range → **"85000"** (annual), current salary → **"0"**. Skill-specific
+expect/desired/require/range → **"85000"** annual (or **"7000"** if the question says "monthly",
+**"45"** if "hour/hourly"), current salary → **"0"**. Skill-specific
 "years with X" still uses the skill logic. NOTE: existing bad entries already in the
 `questions_bank` are served first (tier 1), so they were also corrected via the API
 (years → "2", salary → "85000").

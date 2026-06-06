@@ -257,7 +257,9 @@ function inferFromResume(
     (q.includes("salary") || q.includes("compensation") || q.includes("pay")) &&
     (q.includes("expect") || q.includes("desired") || q.includes("require") || q.includes("range") || q.includes("looking for"))
   ) {
-    return { answer: "85000", confidence: 0.85 };
+    if (q.includes("hour")) return { answer: "45", confidence: 0.85 };    // ~$90k/yr
+    if (q.includes("month")) return { answer: "7000", confidence: 0.85 }; // ~$84k/yr
+    return { answer: "85000", confidence: 0.85 };                          // annual default
   }
 
   // Generic "years of professional/work/total experience" (NOT tied to a specific skill).
