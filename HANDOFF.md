@@ -1,5 +1,14 @@
 # Job Apply Bot — Full Handoff Context for New Conversation
 
+## Run verification 2026-06-06
+
+**Scraping:** Greenhouse +8 new jobs (180 companies), Lever 0 new / 28 non-US filtered, Indeed 0 (session active, 0 easy-apply found), Handshake 0 (ASU SSO OK), LinkedIn disabled.
+**Applying (Phase 3):** 0 submitted, 0 failed. All 6 queued jobs were Greenhouse/Stripe jobs skipped retryable (attempt 1/4 — "no application form found" or redirect); cover letters generated. Daily budget untouched (100 remaining).
+**Email (Phase 4):** Gmail OK (141 inbox emails), Yahoo OK (696 inbox emails). 3 confirmations matched this run. All-time confirmed: 56 out of 341 total application records.
+**Greenhouse variety:** Pinterest 34 apps, Peloton 3.
+**What the bot enters:** Work auth — "If hired, can you furnish proof...?" → Yes (user). Visa/sponsorship → "Yes" (user). US Citizen → No (ai). Years experience → 6 (ai, general); 1 (ai, specific tools). Salary → "$25–$30/hr range" (ai). Start date → "available to start after OPT period begins" (user). No EEO answers saved (none encountered).
+**Debug screenshots (most recent):** linkedin-validation-error-step3-2026-06-04T09-10-28-212Z.png and 9 older; all LinkedIn ATS-overlay step-3 failures (expected).
+
 ## ✅ ROOT-CAUSE fix for the server crashing (2026-06-05)
 
 The recurring downtime was the Node process **crashing** with `[ELIFECYCLE] Command failed
