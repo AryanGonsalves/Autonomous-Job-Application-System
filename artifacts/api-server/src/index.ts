@@ -3,6 +3,19 @@ import { logger } from "./lib/logger";
 import { runMigrations } from "./lib/dbMigrate";
 import { startScheduler } from "./lib/scheduler";
 
+// Keep the long-running automation server alive. Playwright (browser/page/context
+// teardown, CDP drops) and IMAP generate many async operations; a SINGLE unhandled
+// promise rejection or exception would otherwise crash the whole Node process — the
+// recurring "[ELIFECYCLE] Command failed with exit code 1" that kept taking the API
+// down. Log and continue instead of dying. (The per-job try/catch in the scheduler
+// still handles expected failures; this is the safety net for stray async errors.)
+process.on("unhandledRejection", (reason) => {
+  logger.error({ err: reason }, "Unhandled promise rejection — server kept alive");
+});
+process.on("uncaughtException", (err) => {
+  logger.error({ err }, "Uncaught exception — server kept alive");
+});
+
 const rawPort = process.env["PORT"];
 
 if (!rawPort) {

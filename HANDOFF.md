@@ -1,5 +1,17 @@
 # Job Apply Bot — Full Handoff Context for New Conversation
 
+## ✅ ROOT-CAUSE fix for the server crashing (2026-06-05)
+
+The recurring downtime was the Node process **crashing** with `[ELIFECYCLE] Command failed
+with exit code 1` — an **unhandled promise rejection / exception** (Playwright browser/page
+teardown, CDP drops, IMAP) was killing the whole server. `index.ts` had no global handlers.
+Added `process.on("unhandledRejection")` and `process.on("uncaughtException")` that log and
+keep the process alive (the per-job try/catch still handles expected failures). This is the
+real fix; `watchdog.bat` remains as a backstop for true process death (OOM / window closed).
+
+---
+
+
 ## ✅ 2026-06-05 — Email verified + keep-alive watchdog
 
 - **Gmail + Yahoo both confirmed working.** Live email import: Gmail connected + fetched
