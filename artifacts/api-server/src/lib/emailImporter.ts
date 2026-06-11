@@ -403,3 +403,79 @@ export async function runEmailImport(): Promise<ImportResult> {
   );
   return result;
 }
+
+/**
+ * Fetch the one-time "security code" Greenhouse emails after the first submit
+ * on the newer job-boards.greenhouse.io UI. Email shape (verified live):
+ *   From: Greenhouse — Subject: "Security code for your application to {Company}"
+ *   Body: "...paste this code into the security code field on your
+ *          application: {8-char alphanumeric} After you enter the code,
+ *          resubmit your application."
+ * Returns the newest matching code received at/after `since`, or null.
+ */
+export async function fetchGreenhouseSecurityCode(
+  company: string,
+  since: Date
+): Promise<string | null> {
+  const raw = await getAllSettings();
+  const configs: Array<{ host: string; email: string; password: string }> = [];
+  // Yahoo first — it is the application contact address, so the code lands there.
+  if (raw.imapYahooEmail && raw.imapYahooAppPassword) {
+    configs.push({ host: "imap.mail.yahoo.com", email: raw.imapYahooEmail, password: raw.imapYahooAppPassword });
+  }
+  if (raw.imapGmailEmail && raw.imapGmailAppPassword) {
+    configs.push({ host: "imap.gmail.com", email: raw.imapGmailEmail, password: raw.imapGmailAppPassword });
+  }
+
+  // IMAP SINCE is date-granular; filter precisely on parsed Date below.
+  const sinceFloor = new Date(since.getTime() - 5 * 60 * 1000);
+  const companyLc = (company || "").toLowerCase();
+  let best: { code: string; date: Date } | null = null;
+
+  for (const cfg of configs) {
+    let client: ImapFlow | null = null;
+    try {
+      client = await connectImap(cfg.host, cfg.email, cfg.password);
+      const lock = await client.getMailboxLock("INBOX");
+      try {
+        for await (const msg of client.fetch(
+          { since: sinceFloor, subject: "Security code" },
+          { source: true, envelope: true }
+        )) {
+          try {
+            if (!msg.source) continue;
+            const parsed = await simpleParser(msg.source as Buffer);
+            const subject: string = parsed.subject || "";
+            if (!/security code/i.test(subject)) continue;
+            // Prefer the email for THIS company when the subject names one.
+            if (companyLc && /application to/i.test(subject) && !subject.toLowerCase().includes(companyLc.slice(0, 12))) continue;
+            const date: Date = parsed.date ?? new Date(0);
+            if (date.getTime() < sinceFloor.getTime()) continue;
+            const body: string =
+              parsed.text ||
+              (typeof parsed.html === "string" ? (parsed.html as string).replace(/<[^>]+>/g, " ") : "") ||
+              "";
+            const m =
+              body.match(/security code field on your application:?\s*([A-Za-z0-9]{6,12})/i) ||
+              body.match(/code\s*:?\s*([A-Za-z0-9]{6,12})\b[\s\S]{0,80}resubmit/i);
+            if (!m?.[1]) continue;
+            if (!best || date.getTime() > best.date.getTime()) best = { code: m[1], date };
+          } catch {
+            // ignore individual parse errors
+          }
+        }
+      } finally {
+        lock.release();
+      }
+      await safeLogout(client);
+      client = null;
+      if (best) break; // found in the primary mailbox — skip the second account
+    } catch (err) {
+      await addLog("warn", `Security-code fetch error for ${cfg.host}: ${err}`, "email");
+    } finally {
+      await safeLogout(client);
+      client = null;
+    }
+  }
+  return best?.code ?? null;
+}

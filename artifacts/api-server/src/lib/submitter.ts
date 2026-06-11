@@ -5,6 +5,7 @@ import { getContextWithSession, createFreshStealthContext } from "./browser";
 import { generateAtsAnswer, generateYesNoAnswer } from "./aiClient";
 import { addLog } from "./automationLog";
 import { getSetting } from "./settings";
+import { fetchGreenhouseSecurityCode } from "./emailImporter";
 import type { Job } from "@workspace/db";
 import type { ParsedResume } from "./resumeParser";
 
@@ -1193,6 +1194,143 @@ async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
       else if (tiCount > 0) await q.locator('input[type="text"]').first().fill(finalAnswer).catch(() => {});
     }
 
+    // ── Newer React board (job-boards.greenhouse.io) — ADDITIVE, runs after the
+    // legacy loop. Verified live on Affirm (June 2026): the legacy selectors
+    // ([data-field-type], .field-container, .custom-field) match ZERO elements
+    // there. The real markup is:
+    //   form#application-form.application--form
+    //     div.application--questions > div.field-wrapper   (one per question)
+    //       label[for]  ("*" suffix when required)
+    //       text inputs in .input-wrapper / react-select in .select-shell
+    //         (.select__control opens .select__menu with .select__option items)
+    //   validation errors render as p.helper-text--error (id="{field}-error")
+    // On classic boards (Pinterest/Peloton) .field-wrapper matches nothing, so
+    // this loop is a no-op there — no regression risk.
+    const ghIsDemographicQ = (t: string): boolean =>
+      /\b(gender|race|ethnicit|veteran|disabilit|pronoun|sexual orientation|transgender|lgbtq|hispanic|latino|demographic|self[- ]identif)/i.test(t);
+
+    const fieldWrappers = formScope.locator(
+      '#application-form .field-wrapper, form.application--form .field-wrapper'
+    );
+    const fwCount = await fieldWrappers.count().catch(() => 0);
+    if (fwCount > 0) {
+      await addLog("info", `Greenhouse: new React board detected (${fwCount} field wrappers) for ${job.company}`, "greenhouse");
+    }
+    for (let i = 0; i < fwCount; i++) {
+      const w = fieldWrappers.nth(i);
+      const rawLabel = await w.locator("label").first().textContent().catch(() => "");
+      const labelText = (rawLabel ?? "").replace(/\s+/g, " ").trim();
+      if (!labelText) continue;
+      const ql = labelText.toLowerCase();
+
+      // Standard fields + file uploads already handled above (ids first_name,
+      // last_name, email, phone exist on the new board too).
+      if (/^(first name|last name|email|phone|attach|enter manually|resume|cover letter)/.test(ql)) continue;
+
+      const isRequired =
+        labelText.includes("*") ||
+        (await w.locator('[aria-required="true"], [required]').count().catch(() => 0)) > 0;
+
+      // ---- react-select dropdowns ----
+      const selControl = w.locator(".select__control").first();
+      if ((await selControl.count().catch(() => 0)) > 0) {
+        // Skip if a value is already selected (e.g. Country auto-detected)
+        if ((await w.locator(".select__single-value, .select__multi-value").count().catch(() => 0)) > 0) continue;
+        // Optional demographic dropdowns: leave blank
+        if (!isRequired && ghIsDemographicQ(ql)) continue;
+
+        await selControl.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+        await selControl.click({ timeout: 5000 }).catch(() => {});
+        const optionLoc = formScope.locator(".select__menu .select__option");
+        await optionLoc.first().waitFor({ state: "visible", timeout: 5000 }).catch(() => {});
+        const optTexts = (await optionLoc.allTextContents().catch(() => [] as string[])).map((t) => t.trim());
+        if (optTexts.length === 0) {
+          await page.keyboard.press("Escape").catch(() => {});
+          continue;
+        }
+        const lowerOpts = optTexts.map((t) => t.toLowerCase());
+        let pickIdx = -1;
+
+        // 1. EEO/demographic → decline / prefer-not-to-say option
+        if (ghIsDemographicQ(ql)) {
+          pickIdx = lowerOpts.findIndex((t) => /prefer not|decline|don'?t wish|do not wish/.test(t));
+        }
+        // 2. Yes/No dropdowns → authoritative profile answer
+        if (pickIdx < 0 && lowerOpts.some((t) => /^yes\b/.test(t)) && lowerOpts.some((t) => /^no\b/.test(t))) {
+          const answerYes = await generateYesNoAnswer(
+            labelText,
+            { jobTitle: job.jobTitle, company: job.company, jobDescription: job.jobDescription ?? "" },
+            resume
+          );
+          pickIdx = lowerOpts.findIndex((t) => (answerYes ? /^yes\b/.test(t) : /^no\b/.test(t)));
+        }
+        // 3. Otherwise: match the generated answer against option texts
+        if (pickIdx < 0) {
+          const ans = (
+            await generateAtsAnswer(
+              labelText,
+              { jobTitle: job.jobTitle, company: job.company, jobDescription: job.jobDescription ?? "" },
+              resume
+            )
+          ).toLowerCase().trim();
+          pickIdx = lowerOpts.findIndex((t) => t === ans);
+          if (pickIdx < 0) pickIdx = lowerOpts.findIndex((t) => t.length > 1 && (ans.includes(t) || t.includes(ans)));
+        }
+        // 4. Generic fallbacks ("how did you hear about us"-style), then first option
+        if (pickIdx < 0) {
+          pickIdx = lowerOpts.findIndex((t) => /\b(other|job board|linkedin|online|company website)\b/.test(t));
+          if (pickIdx < 0) pickIdx = 0;
+        }
+        await optionLoc.nth(pickIdx).click({ timeout: 5000 }).catch(() => {});
+        await page.waitForTimeout(250);
+        continue;
+      }
+
+      // ---- free-text inputs / textareas the legacy loop didn't reach ----
+      const taLoc = w.locator("textarea").first();
+      const numLoc = w.locator('input[type="number"]').first();
+      const txtLoc = w.locator('input[type="text"]').first();
+      const target =
+        (await taLoc.count().catch(() => 0)) > 0 ? taLoc :
+        (await numLoc.count().catch(() => 0)) > 0 ? numLoc :
+        (await txtLoc.count().catch(() => 0)) > 0 ? txtLoc : null;
+      if (!target) continue;
+      const existing = await target.inputValue().catch(() => "");
+      if (existing && existing.trim()) continue;
+
+      // Deterministic answers first; skip optional link fields we have no data for
+      let answerText: string | null = null;
+      if (ql.includes("preferred name")) answerText = firstName;
+      else if (ql.includes("linkedin")) {
+        if (resume.linkedinUrl) answerText = resume.linkedinUrl;
+        else if (!isRequired) continue;
+      } else if (!isRequired && /\b(twitter|portfolio|website|github|other links|pronunciation)\b/.test(ql)) {
+        continue;
+      }
+
+      if (answerText === null) {
+        answerText = await generateAtsAnswer(
+          labelText,
+          { jobTitle: job.jobTitle, company: job.company, jobDescription: job.jobDescription ?? "" },
+          resume
+        );
+        const isNumericField =
+          (await numLoc.count().catch(() => 0)) > 0 ||
+          ql.includes("how many years") ||
+          ql.includes("years of experience") ||
+          ql.includes("salary") ||
+          ql.includes("compensation") ||
+          ql.includes("notice");
+        if (isNumericField) {
+          if (ql.includes("current") && (ql.includes("salary") || ql.includes("ctc"))) answerText = "0";
+          else if (ql.includes("expected") || ql.includes("desired") || ql.includes("expect")) answerText = "85000";
+          else if (ql.includes("notice") || ql.includes("joining")) answerText = "0";
+          else answerText = extractYearsNumber(answerText);
+        }
+      }
+      await target.fill(answerText).catch(() => {});
+    }
+
     // Submit — try multiple selectors to handle standard + custom Greenhouse embeds.
     // Modern Greenhouse boards (boards.greenhouse.io, job-boards.greenhouse.io) are
     // React SPAs that lazy-render the submit button below the fold AFTER the form
@@ -1268,12 +1406,106 @@ async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
     // Scroll the matched button into view; sticky headers/footers on the React
     // board can otherwise intercept the click and Playwright will time out.
     await submitLocator.scrollIntoViewIfNeeded({ timeout: 5000 }).catch(() => {});
+    const submitClickedAt = new Date();
     try {
       await submitLocator.click({ timeout: 10000 });
     } catch {
       // Force-click as a fallback when an overlay (cookie banner, sticky bar)
       // covers the button so the actionability check never passes.
       await submitLocator.click({ force: true, timeout: 10000 });
+    }
+
+    // ── Email-verification step (newer job-boards.greenhouse.io anti-bot) ──
+    // After the FIRST submit the new board renders a "security code" field and
+    // emails a one-time code: "Copy and paste this code into the security code
+    // field on your application: {code} After you enter the code, resubmit your
+    // application." (verified live on Datadog). Without this step every new-board
+    // application fails as "form still present after submit".
+    await page.waitForTimeout(3500);
+    const secCodeInput = formScope
+      .locator(
+        'input[id*="security" i], input[name*="security" i], input[aria-label*="security code" i], ' +
+        'input[autocomplete="one-time-code"], input[placeholder*="security code" i]'
+      )
+      .first();
+    let secCodeNeeded =
+      (await secCodeInput.count().catch(() => 0)) > 0 &&
+      (await secCodeInput.isVisible().catch(() => false));
+    if (!secCodeNeeded) {
+      const bodyTextNow = await page.evaluate(() => document.body?.innerText?.toLowerCase() ?? "").catch(() => "");
+      if (bodyTextNow.includes("security code")) {
+        await page.waitForTimeout(1500);
+        secCodeNeeded =
+          (await secCodeInput.count().catch(() => 0)) > 0 &&
+          (await secCodeInput.isVisible().catch(() => false));
+      }
+    }
+    if (secCodeNeeded) {
+      await addLog(
+        "info",
+        `Greenhouse: security-code verification required for ${job.company} — polling inbox for the code`,
+        "greenhouse"
+      );
+      let secCode: string | null = null;
+      // Keep well under the scheduler's 4-minute JOB_TIMEOUT — form filling on
+      // long boards already consumes a chunk of it (Klaviyo hit the cap with a
+      // 3-minute poll). The code email typically arrives within seconds.
+      const codeDeadline = Date.now() + 100000;
+      while (!secCode && Date.now() < codeDeadline) {
+        await page.waitForTimeout(10000);
+        secCode = await fetchGreenhouseSecurityCode(job.company, submitClickedAt).catch(() => null);
+      }
+      if (!secCode) {
+        throw new Error(
+          `Greenhouse: security-code email did not arrive within 3 minutes for ${job.company} — cannot complete verification`
+        );
+      }
+      await secCodeInput.fill(secCode).catch(() => {});
+      // Verify the React-controlled input actually took the value; fall back to
+      // keyboard typing if .fill() didn't register.
+      const enteredVal = await secCodeInput.inputValue().catch(() => "");
+      if (enteredVal !== secCode) {
+        await secCodeInput.click({ timeout: 3000 }).catch(() => {});
+        await page.keyboard.type(secCode, { delay: 60 }).catch(() => {});
+      }
+      await page.waitForTimeout(1200);
+      // Resubmit — the security-code panel renders its OWN "Submit application"
+      // button; the original form submit can still be in the DOM, and clicking
+      // that one re-triggers a fresh code email instead of confirming this one
+      // (observed on Postman). Prefer the button inside the code input's own
+      // section, then fall back to Enter-in-input, then a fresh global lookup.
+      const secSectionBtn = secCodeInput
+        .locator('xpath=ancestor::*[.//button][1]//button')
+        .filter({ hasText: /submit/i })
+        .last();
+      if ((await secSectionBtn.count().catch(() => 0)) > 0) {
+        await secSectionBtn.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+        try {
+          await secSectionBtn.click({ timeout: 10000 });
+        } catch {
+          await secSectionBtn.click({ force: true, timeout: 10000 }).catch(() => {});
+        }
+      } else {
+        // No scoped button found — press Enter in the code input (commonly
+        // submits the verification), then fall back to a fresh global submit.
+        await secCodeInput.press("Enter").catch(() => {});
+        await page.waitForTimeout(1500);
+        const secStill = await secCodeInput.isVisible().catch(() => false);
+        if (secStill) {
+          let resubmitLoc = submitLocator;
+          for (const sel of submitSelectors) {
+            const loc = formScope.locator(sel).first();
+            if ((await loc.count().catch(() => 0)) > 0) { resubmitLoc = loc; break; }
+          }
+          await resubmitLoc.scrollIntoViewIfNeeded({ timeout: 5000 }).catch(() => {});
+          try {
+            await resubmitLoc.click({ timeout: 10000 });
+          } catch {
+            await resubmitLoc.click({ force: true, timeout: 10000 }).catch(() => {});
+          }
+        }
+      }
+      await addLog("info", `Greenhouse: security code entered, application resubmitted for ${job.company}`, "greenhouse");
     }
 
     // Wait for confirmation
@@ -1294,7 +1526,38 @@ async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
       // Check we're not still on the form
       const stillOnForm = await submitLocator.count().catch(() => 0);
       if (stillOnForm > 0) {
-        throw new Error(`Greenhouse: form still present after submit — possible validation error (${page.url()})`);
+        // Capture per-field validation messages so the failure is diagnosable
+        // from jobs.notes. New board: p.helper-text--error (id="{field}-error");
+        // also match generic error containers on classic boards.
+        const errTexts = await formScope
+          .locator('.helper-text--error, p[id$="-error"], [class*="field-error"], .error-message')
+          .allTextContents()
+          .catch(() => [] as string[]);
+        const errSummary = [...new Set(errTexts.map((t) => t.replace(/\s+/g, " ").trim()).filter(Boolean))]
+          .slice(0, 6)
+          .join("; ");
+        // Diagnostic: if the security-code UI is (still) on screen, include the
+        // surrounding text so the failure mode is visible in jobs.notes.
+        let secSnippet = "";
+        const bodyTxt = await page.evaluate(() => document.body?.innerText ?? "").catch(() => "");
+        const secIdx = bodyTxt.toLowerCase().indexOf("security code");
+        if (secIdx >= 0) {
+          secSnippet = " | security-code UI present: " +
+            bodyTxt.slice(Math.max(0, secIdx - 80), secIdx + 160).replace(/\s+/g, " ").trim();
+          // Did the entered code survive in the input? (empty → fill failed or page re-rendered)
+          const secInpInfo = await page
+            .evaluate(() => {
+              const el = document.querySelector(
+                'input[id*="security" i], input[name*="security" i], input[autocomplete="one-time-code"]'
+              ) as HTMLInputElement | null;
+              return el ? `id=${el.id || "-"} valLen=${(el.value || "").length}` : "input-not-found";
+            })
+            .catch(() => "n/a");
+          secSnippet += ` [code input: ${secInpInfo}]`;
+        }
+        throw new Error(
+          `Greenhouse: form still present after submit — possible validation error${errSummary ? `: ${errSummary}` : ""}${secSnippet} (${page.url()})`
+        );
       }
     }
 
