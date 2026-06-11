@@ -333,14 +333,19 @@ export async function runPipeline(triggeredBy: "scheduled" | "manual" = "manual"
             if (state.stopRequested) break;
 
             try {
-              // Hard 4-minute timeout per job — prevents Playwright CDP hangs from
+              // Hard timeout per job — prevents Playwright CDP hangs from
               // blocking the entire pipeline when a browser page freezes.
+              // Greenhouse new React boards (15-20 AI-answered questions + the
+              // email security-code verification step) legitimately need longer
+              // than 4 minutes — Affirm/LaunchDarkly/Scopely all hit the cap
+              // mid-fill. Other platforms keep the tighter 4-minute cap.
+              const jobTimeoutMin = job.platform === "greenhouse" ? 8 : 4;
               await Promise.race([
                 submitApplication(job, resume),
                 new Promise<never>((_, reject) =>
                   setTimeout(
-                    () => reject(new Error(`JOB_TIMEOUT: submission exceeded 4 minutes (${job.jobTitle} @ ${job.company})`)),
-                    4 * 60 * 1000
+                    () => reject(new Error(`JOB_TIMEOUT: submission exceeded ${jobTimeoutMin} minutes (${job.jobTitle} @ ${job.company})`)),
+                    jobTimeoutMin * 60 * 1000
                   )
                 ),
               ]);

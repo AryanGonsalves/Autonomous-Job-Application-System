@@ -1236,14 +1236,30 @@ async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
       if ((await selControl.count().catch(() => 0)) > 0) {
         // Skip if a value is already selected (e.g. Country auto-detected)
         if ((await w.locator(".select__single-value, .select__multi-value").count().catch(() => 0)) > 0) continue;
-        // Optional demographic dropdowns: leave blank
-        if (!isRequired && ghIsDemographicQ(ql)) continue;
+        // Optional dropdowns (incl. demographics): leave blank — only required
+        // fields block submission, and every answered question costs an AI call
+        // (long boards were hitting the scheduler JOB_TIMEOUT mid-fill).
+        if (!isRequired) continue;
 
         await selControl.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
         await selControl.click({ timeout: 5000 }).catch(() => {});
         const optionLoc = formScope.locator(".select__menu .select__option");
         await optionLoc.first().waitFor({ state: "visible", timeout: 5000 }).catch(() => {});
-        const optTexts = (await optionLoc.allTextContents().catch(() => [] as string[])).map((t) => t.trim());
+        let optTexts = (await optionLoc.allTextContents().catch(() => [] as string[])).map((t) => t.trim());
+        if (optTexts.length === 0 && /location|city/i.test(ql)) {
+          // Async typeahead (e.g. Lyft "Location (City)*"): options only render
+          // after typing. Type the location preference, then pick the first
+          // suggestion. Focus is already on the combobox input after the click.
+          const locPref = ((await getSetting("locationPreference")) || "Tempe, Arizona").split(",")[0].trim();
+          await page.keyboard.type(locPref, { delay: 60 }).catch(() => {});
+          await optionLoc.first().waitFor({ state: "visible", timeout: 6000 }).catch(() => {});
+          optTexts = (await optionLoc.allTextContents().catch(() => [] as string[])).map((t) => t.trim());
+          if (optTexts.length > 0) {
+            await optionLoc.first().click({ timeout: 5000 }).catch(() => {});
+            await page.waitForTimeout(250);
+            continue;
+          }
+        }
         if (optTexts.length === 0) {
           await page.keyboard.press("Escape").catch(() => {});
           continue;
@@ -1298,13 +1314,15 @@ async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
       const existing = await target.inputValue().catch(() => "");
       if (existing && existing.trim()) continue;
 
-      // Deterministic answers first; skip optional link fields we have no data for
+      // Deterministic answers first; skip ALL other optional fields — only
+      // required ones block submission, and AI answers per question were
+      // pushing long boards past the scheduler JOB_TIMEOUT.
       let answerText: string | null = null;
       if (ql.includes("preferred name")) answerText = firstName;
       else if (ql.includes("linkedin")) {
         if (resume.linkedinUrl) answerText = resume.linkedinUrl;
         else if (!isRequired) continue;
-      } else if (!isRequired && /\b(twitter|portfolio|website|github|other links|pronunciation)\b/.test(ql)) {
+      } else if (!isRequired) {
         continue;
       }
 
@@ -1329,6 +1347,60 @@ async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
         }
       }
       await target.fill(answerText).catch(() => {});
+    }
+
+    // ── Employment-history block (Lyft via careerpuck, others) ──
+    // Markup verified live on the Lyft embed: div.employment-form with
+    // deterministic ids: #company-name-0, #title-0, #start-date-month-0
+    // (react-select), #start-date-year-0, #end-date-month-0, #end-date-year-0,
+    // #current-role-0_1 (checkbox). Required fields — without them the board
+    // rejects with "Company name is required." etc. Filled from resume.
+    const empForm = formScope.locator(".employment-form").first();
+    if ((await empForm.count().catch(() => 0)) > 0 && resume.experience.length > 0) {
+      const exp = resume.experience[0];
+      const compInp = formScope.locator("#company-name-0").first();
+      const compVal = await compInp.inputValue().catch(() => "");
+      if ((await compInp.count().catch(() => 0)) > 0 && !compVal.trim()) {
+        await compInp.fill(exp.company || "Independent Projects").catch(() => {});
+        await formScope.locator("#title-0").first().fill(exp.title || job.jobTitle).catch(() => {});
+
+        // Parse "Jun 2024 – Aug 2024" / "May 2023 - Present" style date strings
+        const MONTH_FULL: Record<string, string> = {
+          jan: "January", feb: "February", mar: "March", apr: "April", may: "May", jun: "June",
+          jul: "July", aug: "August", sep: "September", oct: "October", nov: "November", dec: "December",
+        };
+        const dl = (exp.dates || "").toLowerCase();
+        const years = dl.match(/\b(?:19|20)\d{2}\b/g) ?? [];
+        const monthsRaw = dl.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/g) ?? [];
+        const isCurrent = /present|current|now/.test(dl);
+        const startMonth = MONTH_FULL[(monthsRaw[0] ?? "jan").slice(0, 3)] ?? "January";
+        const endMonth = MONTH_FULL[(monthsRaw[1] ?? monthsRaw[0] ?? "dec").slice(0, 3)] ?? "December";
+        const startYear = years[0] ?? "2023";
+        const endYear = years[1] ?? years[0] ?? "2024";
+
+        // Month pickers are react-select comboboxes: click, type to filter, Enter.
+        async function pickEmpMonth(inputSel: string, monthName: string): Promise<void> {
+          const inp = formScope.locator(inputSel).first();
+          if ((await inp.count().catch(() => 0)) === 0) return;
+          await inp.click({ timeout: 4000 }).catch(() => {});
+          await page.keyboard.type(monthName.slice(0, 3), { delay: 60 }).catch(() => {});
+          await page.waitForTimeout(500);
+          await page.keyboard.press("Enter").catch(() => {});
+          await page.waitForTimeout(250);
+        }
+
+        await pickEmpMonth("#start-date-month-0", startMonth);
+        await formScope.locator("#start-date-year-0").first().fill(startYear).catch(() => {});
+        if (isCurrent) {
+          // "Current role" checkbox removes the end-date requirement
+          await formScope.locator('#current-role-0_1, input[id^="current-role-0"]').first()
+            .check({ force: true }).catch(() => {});
+        } else {
+          await pickEmpMonth("#end-date-month-0", endMonth);
+          await formScope.locator("#end-date-year-0").first().fill(endYear).catch(() => {});
+        }
+        await addLog("info", `Greenhouse: employment-history block filled from resume for ${job.company}`, "greenhouse");
+      }
     }
 
     // Submit — try multiple selectors to handle standard + custom Greenhouse embeds.
