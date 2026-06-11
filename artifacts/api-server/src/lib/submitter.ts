@@ -1231,6 +1231,18 @@ async function submitGreenhouse(job: Job, resume: ParsedResume): Promise<void> {
         labelText.includes("*") ||
         (await w.locator('[aria-required="true"], [required]').count().catch(() => 0)) > 0;
 
+      // ---- required terms/consent checkboxes ----
+      // e.g. The Trade Desk: "Please accept the terms to proceed." renders a
+      // checkbox, not a select. Excludes the employment block's "Current role".
+      const cbLoc = w.locator('input[type="checkbox"]:not([id*="current-role"])').first();
+      if ((await cbLoc.count().catch(() => 0)) > 0) {
+        if (isRequired || /terms|consent|acknowledge|agree|certify|privacy|accept/i.test(ql)) {
+          const cbChecked = await cbLoc.isChecked().catch(() => false);
+          if (!cbChecked) await cbLoc.check({ force: true }).catch(() => {});
+        }
+        continue;
+      }
+
       // ---- react-select dropdowns ----
       const selControl = w.locator(".select__control").first();
       if ((await selControl.count().catch(() => 0)) > 0) {
