@@ -195,25 +195,35 @@ function inferFromResume(
   // NOTE: for the multi-user cloud version, replace these constants with a per-user
   // profile object loaded from settings/DB.
 
-  // Authorized to work NOW (on OPT) — but NOT "without sponsorship".
+  // Work authorization & sponsorship. F-1 OPT: authorized to work NOW, but WILL need future
+  // sponsorship. Order matters; uses regex so phrasings like "authorized to LAWFULLY work" or
+  // "require assistance with work authorization" are caught (literal substrings missed these,
+  // letting the AI wrongly answer "No").
+  const asksWork =
+    /(authoriz|authorised)\w*\s+to\s+(lawfully\s+|legally\s+)?work/.test(q) ||
+    /(legally|lawfully)\s+(allowed|authoriz\w*|eligible|able|permitted)\s+to\s+work/.test(q) ||
+    /eligible to work/.test(q) ||
+    /right to work/.test(q) ||
+    /permitted to work/.test(q);
+  // (a) "...work WITHOUT sponsorship / restriction" → No (needs future sponsorship).
   if (
-    (q.includes("authorized to work") || q.includes("authorised to work") ||
-      q.includes("legally authorized") || q.includes("legally allowed to work") ||
-      q.includes("eligible to work") || q.includes("work in the united states")) &&
-    !q.includes("without") && !q.includes("sponsorship")
-  ) {
-    return { answer: "Yes", confidence: 0.97 };
-  }
-  // "Authorized to work WITHOUT sponsorship / restriction" → No (needs future sponsorship).
-  if (
-    (q.includes("authorized to work") || q.includes("authorised to work") || q.includes("work in the u")) &&
+    (asksWork || q.includes("work in the u")) &&
     (q.includes("without sponsorship") || q.includes("without restriction") ||
-      q.includes("without requiring") || q.includes("without need") || q.includes("on an ongoing basis"))
+      q.includes("without requiring") || q.includes("without need") ||
+      q.includes("without visa") || q.includes("on an ongoing basis"))
   ) {
     return { answer: "No. Authorized now on F-1 OPT, but will require visa sponsorship in the future.", confidence: 0.95 };
   }
-  // Any sponsorship / visa question (now or in the future) → Yes.
-  if (q.includes("sponsor") || q.includes("visa") || q.includes("work permit")) {
+  // (b) Sponsorship / visa / work-permit, or "require/need assistance with work authorization" → Yes.
+  if (
+    q.includes("sponsor") || q.includes("visa") || q.includes("work permit") ||
+    /requir\w*.*work authoriz/.test(q) || /(assistance|help|support).*work authoriz/.test(q) ||
+    /immigration (status|sponsor)/.test(q)
+  ) {
+    return { answer: "Yes", confidence: 0.95 };
+  }
+  // (c) General "are you authorized / legally allowed / eligible to work [in US/country]?" → Yes.
+  if (asksWork || /work in the (us|u\.s\.?|united states|country|location)/.test(q)) {
     return { answer: "Yes", confidence: 0.95 };
   }
   // US citizen / permanent resident / green card → No (international student).
